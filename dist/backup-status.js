@@ -7,12 +7,13 @@ function timestamp(value) {
 }
 
 export function readBackupStatus(raw) {
-  if (!raw || typeof raw !== "object") return { lastExportedAt: null, lastDataChangeAt: null, dismissedChangeAt: null };
-  return { lastExportedAt: timestamp(raw.lastExportedAt), lastDataChangeAt: timestamp(raw.lastDataChangeAt), dismissedChangeAt: timestamp(raw.dismissedChangeAt) };
+  if (!raw || typeof raw !== "object") return { lastDownloadStartedAt: null, lastDataChangeAt: null, dismissedChangeAt: null };
+  // Accept the earlier device-local field so this wording fix preserves existing recency state.
+  return { lastDownloadStartedAt: timestamp(raw.lastDownloadStartedAt ?? raw.lastExportedAt), lastDataChangeAt: timestamp(raw.lastDataChangeAt), dismissedChangeAt: timestamp(raw.dismissedChangeAt) };
 }
 
-export function recordBackupExport(status, now = Date.now()) {
-  return { ...readBackupStatus(status), lastExportedAt: timestamp(now), dismissedChangeAt: null };
+export function recordBackupDownloadStarted(status, now = Date.now()) {
+  return { ...readBackupStatus(status), lastDownloadStartedAt: timestamp(now), dismissedChangeAt: null };
 }
 
 export function recordDataChange(status, now = Date.now()) {
@@ -25,17 +26,17 @@ export function dismissBackupReminder(status) {
 }
 
 export function backupStatusLabel(status, now = Date.now()) {
-  const exportedAt = readBackupStatus(status).lastExportedAt;
-  if (!exportedAt) return "No backup recorded on this device.";
+  const downloadStartedAt = readBackupStatus(status).lastDownloadStartedAt;
+  if (!downloadStartedAt) return "No backup download recorded on this device.";
   const today = new Date(now); today.setHours(0, 0, 0, 0);
-  const exportedDay = new Date(exportedAt); exportedDay.setHours(0, 0, 0, 0);
-  const days = Math.max(0, Math.floor((today - exportedDay) / DAY_MS));
-  if (days === 0) return "Last backup: Today";
-  if (days === 1) return "Last backup: Yesterday";
-  return `Last backup: ${days} days ago`;
+  const downloadStartedDay = new Date(downloadStartedAt); downloadStartedDay.setHours(0, 0, 0, 0);
+  const days = Math.max(0, Math.floor((today - downloadStartedDay) / DAY_MS));
+  if (days === 0) return "Backup download started: Today";
+  if (days === 1) return "Backup download started: Yesterday";
+  return `Backup download started: ${days} days ago`;
 }
 
 export function needsBackupReminder(status) {
   const current = readBackupStatus(status);
-  return Boolean(current.lastDataChangeAt && (!current.lastExportedAt || current.lastDataChangeAt > current.lastExportedAt) && current.dismissedChangeAt !== current.lastDataChangeAt);
+  return Boolean(current.lastDataChangeAt && (!current.lastDownloadStartedAt || current.lastDataChangeAt > current.lastDownloadStartedAt) && current.dismissedChangeAt !== current.lastDataChangeAt);
 }

@@ -23,6 +23,7 @@ The product principle is **enter once, use everywhere**: a class and roster are 
 - Create, reopen, edit, search, duplicate, print, and deliberately delete class-scoped lesson plans. The focused plain-text editor uses Before, During, and After prompts without claiming any official lesson-plan format.
 - Save lessons explicitly. The editor shows whether work is unsaved or saved locally and asks before navigating away from unsaved changes.
 - Copy teacher-authored lessons and assessments to another active class as independent Drafts. Copies receive fresh IDs (including question and answer-choice IDs), assessment copies have no scores, and no roster, attendance, or historical records are copied. Same-class duplication remains a separate action.
+- Save persisted Lessons and authored Assessments as independent templates in My Materials. Search by title or type, then review and add a fresh class-owned Draft to an active class. Templates survive class archive/deletion; changes to a template or class copy never update the other. My Materials is local to this device and is included in encrypted backups.
 - Open Student Progress within a class to search active students, optionally view archived students, and inspect one student's recorded attendance and assessment history. Zero scores remain distinct from missing scores.
 - Student Progress uses the same exact generic raw-score percentage arithmetic as Gradebook. Its aggregate, when scores exist, is `sum recorded raw scores / sum corresponding maximum scores`; it is never an official grade, ranking, prediction, or student label.
 - Open Reports within a class for a printable Class Roster, date-filtered Attendance Summary, Assessment Results, or Class Overview. Every report is derived on demand from canonical local records; it is not persisted or added to backups.
@@ -32,10 +33,10 @@ The product principle is **enter once, use everywhere**: a class and roster are 
 - Display Mode shows only the teacher-selected student, session groups, countdown, and optional temporary message—never administrative controls, grades, percentages, attendance, assessment results, notes, archived students, or private IDs.
 - See `raw score / maximum score` and a generic raw percentage calculated with exact decimal arithmetic and half-up display rounding to two decimal places.
 - Export a compact JSON backup—including attendance, assessments, scores, authored questions, answer choices, and lessons—and restore a validated backup using a clearly labelled **replacement-only** flow. Earlier backups without newer arrays remain importable.
-- See a subtle device-local reminder of when a backup was last successfully exported, or that no export has been recorded on this device. Classroom changes can prompt a dismissible reminder; this metadata contains no class/student information and is not part of the backup.
+- See a subtle device-local reminder of when a backup download was started, or that no download has been recorded on this device. The browser cannot confirm that the downloaded file was ultimately saved; classroom changes can prompt a dismissible reminder. This metadata contains no class/student information and is not part of the backup.
 - A polished mobile navigation pattern, touch-friendly controls, visible focus styles, a skip link, and reduced-motion support.
 - A dependency-free, installable PWA foundation with an offline application shell.
-- A browser-local IndexedDB storage boundary, migrated additively to schema version 6.
+- A browser-local IndexedDB storage boundary, migrated additively to schema version 7; version 7 adds a separate indexed `materials` store without changing existing class records.
 - A minimal static security policy that permits no third-party scripts, images, or network connections.
 
 No real classes, students, grades, attendance, or sample student data are bundled with the application.
@@ -52,6 +53,7 @@ dist/
   class-tool-navigation.js  No-class class-scoped tool routing and accessible class selection
   score-paste.js        Roster-mapped score-paste review and draft application
   backup-status.js      Device-local backup recency/reminder metadata
+  backup-crypto.js      Passphrase-derived AES-GCM encryption for exported backups
   classroom.js          Pure picker, balanced grouping, and deadline-timer logic
   storage.js            IndexedDB schema, migrations, normalized local records, backups
   gradebook.js          Explicit generic calculation layer; no official policy constants
@@ -63,12 +65,13 @@ dist/
 tests/
   storage-foundation.test.mjs  Schema and storage-boundary tests
   classes-roster.test.mjs      Class, roster, deletion, and backup integrity tests
+  backup-crypto.test.mjs       Encrypted backup confidentiality and tamper rejection tests
   offline-shell.test.mjs       Offline cache/update strategy tests
 ```
 
 ### Shared data model
 
-`storage.js` uses versioned local stores for workspace data, classes, students, attendance, assessments, scores, questions, question options, and lessons. Today, Student Progress, and Reports are derived views, not persisted report/progress records. My Classes uses `classes` and `students`; Attendance uses normalized records with `classId`, `studentId`, `date` (`YYYY-MM-DD` in the device’s local time), and one stable status: `present`, `absent`, `late`, or `excused`. Attendance never stores a copied student name, and a deterministic record ID keeps each student to one status per class/date.
+`storage.js` uses versioned local stores for workspace data, classes, students, attendance, assessments, scores, questions, question options, lessons, and My Materials templates. Today, Student Progress, and Reports are derived views, not persisted report/progress records. My Materials stores only teacher-authored Lesson or Assessment template content, never class rosters, attendance, scores, or history. A class copy receives fresh class-owned IDs and is an independent Draft snapshot. My Classes uses `classes` and `students`; Attendance uses normalized records with `classId`, `studentId`, `date` (`YYYY-MM-DD` in the device’s local time), and one stable status: `present`, `absent`, `late`, or `excused`. Attendance never stores a copied student name, and a deterministic record ID keeps each student to one status per class/date.
 
 The gradebook uses `assessments` (`id`, `classId`, title, date, maximum score, optional category/period, authoring status, print metadata, and `policyId`) and `scores` (`assessmentId`, `classId`, `studentId`, and canonical raw-score decimal text). A score identifier is deterministic for the assessment/student pair. A missing score has no score record; a zero score is the explicit raw value `"0"`. Student names are never copied into assessment or score records.
 
@@ -94,7 +97,7 @@ No mode is labelled DepEd, K–12, DO 015, s. 2026, or official/current grading.
 
 V1 requires no account and no backend. Classes and student rosters remain in IndexedDB on the teacher's device. The application makes no external API calls, includes no analytics, and never places records in URLs or service-worker cache keys. The service worker caches only public application files, never classroom data.
 
-Teachers should understand that browser storage is tied to their browser and device; clearing browser site data can remove locally stored records. Export a backup regularly and store it somewhere the teacher controls. Backup files are not encrypted and may contain student names, so they should be protected like any other private class list.
+Teachers should understand that browser storage is tied to their browser and device; clearing browser site data can remove locally stored records. Export an encrypted backup regularly and store it somewhere the teacher controls. The passphrase is never stored by MATEVOK; losing it makes that backup unrecoverable. Older unencrypted backups remain importable and are clearly warned about before restore. Browser storage itself is not encrypted by MATEVOK and still depends on device and browser-profile access controls.
 
 ### Classroom Mode session behavior
 
@@ -104,7 +107,7 @@ The picker uses browser cryptographic randomness when available. Grouping uses a
 
 ### Backup, restore, and deletion
 
-Export produces a machine-readable JSON file containing the currently supported local data: classes, student rosters, attendance records, assessments, scores, questions, question options, and lessons. Restore validates the file format, backup version, record IDs, record shape, class and assessment relationships, score maximums, question/option ownership, lesson/class ownership, option positions, duplicate score relationships, and Ready requirements before it can proceed. Restore is **replacement only**, never a silent merge: it shows incoming totals and requires a checkbox confirmation before replacing current records. Stable IDs are preserved exactly. Valid earlier backups without newer arrays import those collections as empty.
+Export produces a passphrase-encrypted JSON file containing the currently supported local data: classes, student rosters, attendance records, assessments, scores, questions, question options, lessons, and materials. Encryption uses AES-256-GCM with a fresh random salt and nonce per export and PBKDF2-SHA-256 key derivation. The passphrase is not stored; if it is lost, MATEVOK cannot recover the file. Restore authenticates and decrypts encrypted files locally, then validates the backup format, record IDs, shape, relationships, score maximums, question/option ownership, lesson/class ownership, duplicate relationships, and Ready requirements before review. Earlier plaintext backups remain importable with an explicit warning. Restore is **replacement only**, never a silent merge: it shows incoming totals and requires a checkbox confirmation before replacing current records. Stable IDs are preserved exactly. Valid earlier backups without newer arrays import those collections as empty. Export reads all backed-up stores in one read-only IndexedDB transaction for a coherent snapshot.
 
 Archiving a class or student is reversible. New attendance sessions and score-entry rows include only active students; prior normalized attendance and scores stay available when a student or class is archived. Lessons remain readable with an archived class and return with it when restored. Permanently deleting a class requires typing its exact name and removes only that class plus records explicitly linked to its `classId`, including attendance, assessments, scores, questions, answer choices, and lessons. Deleting an assessment requires typing its title and removes only its linked scores, questions, and answer choices.
 
@@ -126,7 +129,7 @@ For a manual browser check, serve `dist/` on `localhost` or HTTPS. Exercise clas
 
 ## Scope and boundaries
 
-Current product scope covers local class/roster records, attendance, generic score entry, assessment authoring/printing, lesson planning, session-only Classroom Mode, derived Student Progress and Reports, cross-class copies of teacher-authored lessons/assessments, and local backup/restore. It does not implement official school/DepEd grading calculations, student accounts, cloud sync, messaging/LMS, auto-grading, or encrypted backups. Any future policy-specific calculation would require separate authoritative verification and must not overwrite raw assessment or score records.
+Current product scope covers local class/roster records, attendance, generic score entry, assessment authoring/printing, lesson planning, session-only Classroom Mode, derived Student Progress and Reports, cross-class copies of teacher-authored lessons/assessments, and local encrypted backup/restore with legacy plaintext import. It does not implement official school/DepEd grading calculations, student accounts, cloud sync, messaging/LMS, or auto-grading. Any future policy-specific calculation would require separate authoritative verification and must not overwrite raw assessment or score records.
 
 ## Intentional limitations and risks
 

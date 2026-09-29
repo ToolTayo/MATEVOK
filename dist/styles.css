@@ -447,3 +447,29 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
     min-height: 44px;
   }
 }
+
+.materials-heading { align-items: start; }
+.materials-heading .form-note { margin: .75rem 0 0; }
+.materials-tools { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(11rem, .45fr); gap: .85rem; max-width: 55rem; margin: 1rem 0 1.4rem; padding: 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.materials-tools .field { margin: 0; }
+.materials-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: 1rem; }
+.material-card { display: flex; min-width: 0; min-height: 13rem; flex-direction: column; padding: 1.15rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.material-card-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; color: var(--muted); font-size: .78rem; }
+.material-kind { padding: .25rem .55rem; color: #175d61; background: #e8f3f1; border-radius: 999px; font-weight: 760; }
+.material-card h2 { margin: .9rem 0 .5rem; font-size: 1.2rem; line-height: 1.3; overflow-wrap: anywhere; }
+.material-card-details { margin: 0 0 1rem; color: var(--muted); font-size: .9rem; line-height: 1.5; }
+.material-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-top: auto; padding-top: .35rem; }
+.library-empty { margin-top: .5rem; }
+.workspace-tools-heading { align-items: center; }
+
+@media (max-width: 700px) {
+  .materials-heading { display: grid; grid-template-columns: 1fr; gap: .85rem; }
+  .materials-heading > .heading-actions { display: grid; width: 100%; }
+  .materials-heading > .heading-actions .button { width: 100%; min-height: 44px; }
+  .materials-tools { grid-template-columns: 1fr; padding: .8rem; }
+  .material-card { min-height: 0; }
+  .material-card-actions { display: grid; grid-template-columns: 1fr; }
+  .material-card-actions .button { width: 100%; min-height: 44px; }
+  .workspace-tools-heading { align-items: flex-start; flex-direction: column; }
+  .workspace-tools-heading > .button { width: 100%; min-height: 44px; }
+}

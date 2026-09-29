@@ -1,10 +1,11 @@
 /** Private browser-local data boundary. UI code never accesses IndexedDB directly. */
 import { GENERIC_RAW_POLICY, compareDecimal, normalizeDecimalInput, sumDecimalStrings } from "./gradebook.js";
 export const DATABASE_NAME = "teacher-workspace";
-export const LOCAL_SCHEMA_VERSION = 6;
+export const LOCAL_SCHEMA_VERSION = 7;
 export const META_STORE = "meta";
 export const BACKUP_FORMAT = "teacher-workspace-backup";
-export const BACKUP_VERSION = 1;
+export const BACKUP_VERSION = 2;
+export const LEGACY_BACKUP_VERSION = 1;
 
 export const STORE_DEFINITIONS = Object.freeze([
   { name: "workspaces", indexes: [] },
@@ -19,14 +20,15 @@ export const STORE_DEFINITIONS = Object.freeze([
   { name: "lessons", indexes: [["classId", "classId"]] },
   { name: "classroomState", indexes: [["classId", "classId"]] },
   { name: "progress", indexes: [["classId", "classId"], ["studentId", "studentId"]] },
-  { name: "reports", indexes: [["classId", "classId"]] }
+  { name: "reports", indexes: [["classId", "classId"]] },
+  { name: "materials", indexes: [["kind", "kind"], ["title", "title"]] }
 ]);
-export const BACKUP_STORES = Object.freeze(["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons"]);
+export const BACKUP_STORES = Object.freeze(["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "materials"]);
 export const ATTENDANCE_STATUSES = Object.freeze(["present", "absent", "late", "excused"]);
 export const QUESTION_TYPES = Object.freeze(["multiple-choice", "true-false", "short-answer", "essay"]);
 export const LESSON_STATUSES = Object.freeze(["draft", "ready"]);
 const DATA_STORES = new Set(STORE_DEFINITIONS.map(({ name }) => name));
-const CLASS_RELATED_STORES = STORE_DEFINITIONS.map(({ name }) => name).filter((name) => name !== "workspaces");
+const CLASS_RELATED_STORES = STORE_DEFINITIONS.map(({ name }) => name).filter((name) => !["workspaces", "materials"].includes(name));
 
 export class LocalStorageError extends Error { constructor(message, cause) { super(message); this.name = "LocalStorageError"; this.cause = cause; } }
 const contains = (names, value) => typeof names.contains === "function" ? names.contains(value) : names.includes(value);
@@ -147,6 +149,49 @@ export function prepareLesson(value, existing = null, now = new Date().toISOStri
     createdAt: existing?.createdAt ?? value?.createdAt
   }, now);
 }
+const LESSON_MATERIAL_FIELDS = Object.freeze(["learningGoals", "priorKnowledge", "materials", "before", "during", "checkForUnderstanding", "assessment", "reflection", "nextStep", "notes"]);
+function materialLessonContent(value) {
+  const lesson = prepareLesson({ ...value, classId: "material-validation", date: "" });
+  return { title: lesson.title, status: lesson.status, ...Object.fromEntries(LESSON_MATERIAL_FIELDS.map((field) => [field, lesson[field]])) };
+}
+function materialAssessmentContent(value, title) {
+  if (!Array.isArray(value?.questions)) throw new LocalStorageError("The assessment template questions are not valid.");
+  const assessment = prepareAssessment({ ...value, title, classId: "material-validation", date: value.date || getLocalDateString(), term: "" });
+  const childIds = new Set(), questionPositions = new Set();
+  const questions = value.questions.map((entry, position) => {
+    const id = normalizeText(entry?.id, 120) || createLocalId("material-question");
+    if (childIds.has(id)) throw new LocalStorageError("The assessment template has duplicate question identifiers.");
+    childIds.add(id);
+    const questionPosition = Number(entry.position ?? position); if (questionPositions.has(questionPosition)) throw new LocalStorageError("The assessment template has duplicate question positions."); questionPositions.add(questionPosition);
+    if (!Array.isArray(entry?.options)) throw new LocalStorageError("An assessment template question has invalid answer choices.");
+    if (normalizeText(entry?.questionType, 30).toLowerCase() !== "multiple-choice" && entry.options.length) throw new LocalStorageError("Only multiple-choice template questions can contain answer choices.");
+    const optionPositions = new Set();
+    const options = entry.options.map((option, optionPosition) => {
+      const optionId = normalizeText(option?.id, 120) || createLocalId("material-option");
+      if (childIds.has(optionId)) throw new LocalStorageError("The assessment template has duplicate question or answer-choice identifiers.");
+      childIds.add(optionId);
+      const prepared = prepareQuestionOption({ ...option, id: optionId, questionId: id, assessmentId: "material-validation", classId: "material-validation", position: option.position ?? optionPosition });
+      if (optionPositions.has(prepared.position)) throw new LocalStorageError("An assessment template question has duplicate answer-choice positions."); optionPositions.add(prepared.position);
+      return { id: prepared.id, text: prepared.text, position: prepared.position };
+    });
+    const prepared = prepareQuestion({ ...entry, id, assessmentId: "material-validation", classId: "material-validation", position: entry.position ?? position });
+    if (prepared.questionType === "multiple-choice" && prepared.correctOptionId && !options.some((option) => option.id === prepared.correctOptionId)) throw new LocalStorageError("An assessment template answer refers to a choice outside its question.");
+    const complete = { ...prepared, options };
+    if (assessment.authoringStatus === "ready") validateQuestionReady(complete);
+    const { assessmentId, classId, createdAt, updatedAt, type, ...questionContent } = prepared;
+    return { ...questionContent, options };
+  });
+  const { id, classId, classDate, date, term, createdAt, updatedAt, type, ...assessmentContent } = assessment;
+  return { ...assessmentContent, questions };
+}
+export function prepareMaterial(value, existing = null, now = new Date().toISOString()) {
+  const kind = normalizeText(value?.kind ?? existing?.kind, 24).toLowerCase();
+  const title = normalizeText(value?.title ?? existing?.title, 160);
+  if (!title) throw new LocalStorageError("Add a title for this material.");
+  if (kind !== "lesson" && kind !== "assessment") throw new LocalStorageError("Choose a Lesson or Assessment template.");
+  const content = kind === "lesson" ? materialLessonContent(value?.content ?? existing?.content) : materialAssessmentContent(value?.content ?? existing?.content, title);
+  return safeRecord("materials", { id: existing?.id ?? value?.id, kind, title, content, type: "material", createdAt: existing?.createdAt ?? value?.createdAt }, now);
+}
 export function attendanceCounts(entries = []) { const counts = Object.fromEntries(ATTENDANCE_STATUSES.map((status) => [status, 0])); entries.forEach((entry) => { if (ATTENDANCE_STATUSES.includes(entry?.status)) counts[entry.status] += 1; }); return counts; }
 export function parseRoster(text) { return typeof text === "string" ? text.split(/\r?\n/).map((line, index) => ({ line: index + 1, fullName: normalizeText(line, 120) })).filter(({ fullName }) => fullName) : []; }
 export function reviewRoster(text, existingStudents = []) { const known = new Set(existingStudents.filter((student) => !student.archivedAt).map((student) => student.normalizedName || normalizeName(student.fullName))); const seen = new Set(); return parseRoster(text).map((item) => { const normalizedName = normalizeName(item.fullName); const duplicate = known.has(normalizedName) || seen.has(normalizedName); seen.add(normalizedName); return { ...item, normalizedName, duplicate }; }); }
@@ -198,6 +243,28 @@ export async function saveLesson(value, classId, id = null, indexedDb = globalTh
   if (!await getRecord("classes", safeClassId, indexedDb)) throw new LocalStorageError("That class could not be found.");
   return saveLocalRecord("lessons", prepareLesson({ ...value, classId: safeClassId }, existing), indexedDb);
 }
+export async function listMaterials({ kind = null } = {}, indexedDb = globalThis.indexedDB) {
+  const safeKind = kind ? normalizeText(kind, 24).toLowerCase() : null;
+  if (safeKind && !["lesson", "assessment"].includes(safeKind)) throw new LocalStorageError("Choose a Lesson or Assessment template.");
+  return (await getAllRecords("materials", indexedDb)).filter((item) => !safeKind || item.kind === safeKind).sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) || b.updatedAt.localeCompare(a.updatedAt));
+}
+export async function saveLessonToMaterials(id, indexedDb = globalThis.indexedDB) {
+  const source = await getRecord("lessons", id, indexedDb);
+  if (!source) throw new LocalStorageError("That saved lesson could not be found.");
+  return saveLocalRecord("materials", prepareMaterial({ kind: "lesson", title: source.title, content: source }), indexedDb);
+}
+export async function saveAssessmentToMaterials(id, indexedDb = globalThis.indexedDB) {
+  const source = await getRecord("assessments", id, indexedDb);
+  if (!source) throw new LocalStorageError("That saved assessment could not be found.");
+  const questions = await listQuestions(source.id, indexedDb);
+  if (source.authoringStatus === "ready") questions.forEach(validateQuestionReady);
+  return saveLocalRecord("materials", prepareMaterial({ kind: "assessment", title: source.title, content: { ...source, questions } }), indexedDb);
+}
+export async function deleteMaterialPermanently(id, indexedDb = globalThis.indexedDB) {
+  const material = await getRecord("materials", id, indexedDb);
+  if (!material) throw new LocalStorageError("That material could not be found.");
+  return withDatabase(async (db) => { const tx = db.transaction("materials", "readwrite"); tx.objectStore("materials").delete(material.id); await done(tx); return { deletedMaterialId: material.id, kind: material.kind }; }, indexedDb);
+}
 export async function duplicateLesson(id, indexedDb = globalThis.indexedDB) {
   const source = await getRecord("lessons", id, indexedDb);
   if (!source) throw new LocalStorageError("That lesson could not be found.");
@@ -244,14 +311,31 @@ export async function saveAuthoredQuestion(value, assessmentId, id = null, index
 }
 export async function deleteQuestionPermanently(id, indexedDb = globalThis.indexedDB) { const question = await getRecord("questions", id, indexedDb); if (!question) throw new LocalStorageError("That question could not be found."); const options = (await getAllRecords("questionOptions", indexedDb)).filter((option) => option.questionId === question.id); return withDatabase(async (db) => { const tx = db.transaction(["questions", "questionOptions"], "readwrite"); tx.objectStore("questions").delete(question.id); const optionStore = tx.objectStore("questionOptions"); options.forEach((option) => optionStore.delete(option.id)); await done(tx); return { deletedQuestionId: question.id }; }, indexedDb); }
 export async function moveQuestion(id, direction, indexedDb = globalThis.indexedDB) { const question = await getRecord("questions", id, indexedDb); if (!question) throw new LocalStorageError("That question could not be found."); const questions = await listQuestions(question.assessmentId, indexedDb); const index = questions.findIndex((entry) => entry.id === question.id); const targetIndex = direction === "up" ? index - 1 : index + 1; if (targetIndex < 0 || targetIndex >= questions.length) return questions; const target = questions[targetIndex]; const now = new Date().toISOString(); return withDatabase(async (db) => { const tx = db.transaction("questions", "readwrite"); const store = tx.objectStore("questions"); store.put({ ...question, position: target.position, updatedAt: now }); store.put({ ...target, position: question.position, updatedAt: now }); await done(tx); return listQuestions(question.assessmentId, indexedDb); }, indexedDb); }
+async function writeAssessmentCopy(source, target, questions, { title = source.title, date = source.date, term = source.term } = {}, indexedDb = globalThis.indexedDB) {
+  const duplicate = prepareAssessment(freshContent(source, { id: createLocalId("assessment"), classId: target.id, title, date, term, authoringStatus: "draft" })); const questionMap = new Map(); const optionMap = new Map(); const copies = questions.map((question) => { const newId = createLocalId("question"); questionMap.set(question.id, newId); return { question, newId }; }); const optionCopies = [];
+  copies.forEach(({ question, newId }) => question.options.forEach((option) => { const newOptionId = createLocalId("option"); optionMap.set(option.id, newOptionId); optionCopies.push(prepareQuestionOption(freshContent(option, { id: newOptionId, questionId: newId, assessmentId: duplicate.id, classId: duplicate.classId }))); }));
+  const questionCopies = copies.map(({ question, newId }) => prepareQuestion(freshContent(question, { id: newId, assessmentId: duplicate.id, classId: duplicate.classId, correctOptionId: question.correctOptionId ? optionMap.get(question.correctOptionId) : null })));
+  return withDatabase(async (db) => { const tx = db.transaction(["assessments", "questions", "questionOptions"], "readwrite"); tx.objectStore("assessments").put(duplicate); questionCopies.forEach((question) => tx.objectStore("questions").put(question)); optionCopies.forEach((option) => tx.objectStore("questionOptions").put(option)); await done(tx); return duplicate; }, indexedDb);
+}
 async function copyAssessmentContent(id, targetClassId, { sameClass = false } = {}, indexedDb = globalThis.indexedDB) {
   const source = await getRecord("assessments", id, indexedDb); if (!source) throw new LocalStorageError("That assessment could not be found.");
   const target = sameClass ? { id: source.classId } : await activeCopyTarget(source.classId, targetClassId, indexedDb);
   const questions = await listQuestions(source.id, indexedDb); const title = sameClass ? `${source.title} copy` : source.title;
-  const duplicate = prepareAssessment(freshContent(source, { id: createLocalId("assessment"), classId: target.id, title, authoringStatus: "draft" })); const questionMap = new Map(); const optionMap = new Map(); const copies = questions.map((question) => { const newId = createLocalId("question"); questionMap.set(question.id, newId); return { question, newId }; }); const optionCopies = [];
-  copies.forEach(({ question, newId }) => question.options.forEach((option) => { const newOptionId = createLocalId("option"); optionMap.set(option.id, newOptionId); optionCopies.push(prepareQuestionOption(freshContent(option, { id: newOptionId, questionId: newId, assessmentId: duplicate.id, classId: duplicate.classId }))); }));
-  const questionCopies = copies.map(({ question, newId }) => prepareQuestion(freshContent(question, { id: newId, assessmentId: duplicate.id, classId: duplicate.classId, correctOptionId: question.correctOptionId ? optionMap.get(question.correctOptionId) : null })));
-  return withDatabase(async (db) => { const tx = db.transaction(["assessments", "questions", "questionOptions"], "readwrite"); tx.objectStore("assessments").put(duplicate); questionCopies.forEach((question) => tx.objectStore("questions").put(question)); optionCopies.forEach((option) => tx.objectStore("questionOptions").put(option)); await done(tx); return duplicate; }, indexedDb);
+  return writeAssessmentCopy(source, target, questions, { title }, indexedDb);
+}
+export async function materializeMaterialToClass(materialId, targetClassId, indexedDb = globalThis.indexedDB) {
+  const template = await getRecord("materials", materialId, indexedDb);
+  if (!template) throw new LocalStorageError("That My Materials template could not be found.");
+  const target = await getRecord("classes", targetClassId, indexedDb);
+  if (!target || target.archivedAt) throw new LocalStorageError("Choose an active destination class. Archived classes are not available here.");
+  if (template.kind === "lesson") {
+    const lesson = prepareLesson({ ...template.content, id: createLocalId("lesson"), classId: target.id, date: "", status: "draft" });
+    return { kind: "lesson", item: await saveLocalRecord("lessons", lesson, indexedDb), target };
+  }
+  const source = { title: template.title, ...template.content };
+  const assessment = { ...source, title: template.title, date: getLocalDateString(), term: "", authoringStatus: "draft" };
+  const item = await writeAssessmentCopy(assessment, target, template.content.questions, { title: template.title, date: assessment.date, term: "" }, indexedDb);
+  return { kind: "assessment", item, target };
 }
 export async function duplicateAuthoredAssessment(id, indexedDb = globalThis.indexedDB) { const source = await getRecord("assessments", id, indexedDb); if (!source) throw new LocalStorageError("That assessment could not be found."); return copyAssessmentContent(id, source.classId, { sameClass: true }, indexedDb); }
 export async function copyAuthoredAssessmentToClass(id, targetClassId, indexedDb = globalThis.indexedDB) { return copyAssessmentContent(id, targetClassId, {}, indexedDb); }
@@ -259,15 +343,30 @@ export async function updateAssessmentAuthoringStatus(id, status, indexedDb = gl
 export async function syncAssessmentMaximumToQuestionTotal(id, { confirmScored = false } = {}, indexedDb = globalThis.indexedDB) { const { assessment, questions, totalPoints } = await validateAssessmentReady(id, indexedDb); const scores = await listScores(assessment.id, indexedDb); if (scores.length && !confirmScored) return { updated: false, needsConfirmation: true, totalPoints, scoreCount: scores.length }; const updated = await saveAssessment({ ...assessment, maximumScore: totalPoints }, assessment.classId, assessment.id, indexedDb); return { updated: true, needsConfirmation: false, assessment: updated, totalPoints, scoreCount: scores.length, questionCount: questions.length }; }
 export async function deleteClassPermanently(id, indexedDb = globalThis.indexedDB) { const classId = normalizeText(id, 120); if (!classId) throw new LocalStorageError("That class could not be found."); return withDatabase(async (db) => { const tx = db.transaction(CLASS_RELATED_STORES, "readwrite"); const target = await result(tx.objectStore("classes").get(classId)); if (!target) { tx.abort(); throw new LocalStorageError("That class could not be found."); } for (const name of CLASS_RELATED_STORES) { const store = tx.objectStore(name); if (name === "classes") { store.delete(classId); continue; } (await result(store.getAll())).filter((entry) => entry.classId === classId).forEach((entry) => store.delete(entry.id)); } await done(tx); return { deletedClassId: classId }; }, indexedDb); }
 
-function validateBackupRecord(storeName, record, ids, classIds) { if (!record || typeof record !== "object" || Array.isArray(record)) throw new LocalStorageError("The backup contains an invalid record."); const now = record.updatedAt || new Date().toISOString(); const safe = storeName === "classes" ? prepareClass(record, null, now) : storeName === "students" ? prepareStudent(record, record.classId, null, now) : storeName === "attendance" ? prepareAttendance(record, null, now) : storeName === "assessments" ? prepareAssessment(record, null, now) : storeName === "scores" ? prepareScore(record, null, now) : storeName === "questions" ? prepareQuestion(record, null, now) : storeName === "questionOptions" ? prepareQuestionOption(record, null, now) : prepareLesson(record, null, now); if (ids.has(safe.id)) throw new LocalStorageError("The backup contains duplicate record identifiers."); ids.add(safe.id); if (storeName === "classes") classIds.add(safe.id); return safe; }
+function validateMaterialBackupRecord(record) {
+  const only = (value, allowed) => Object.keys(value).every((key) => allowed.has(key));
+  if (!["id", "kind", "title", "content", "type", "createdAt", "updatedAt"].every((key) => key in record) || !only(record, new Set(["id", "kind", "title", "content", "type", "createdAt", "updatedAt"]))) throw new LocalStorageError("The backup contains an invalid My Materials record.");
+  const content = record.content;
+  if (!content || typeof content !== "object" || Array.isArray(content) || "classId" in content || "studentId" in content || "scores" in content || "attendance" in content) throw new LocalStorageError("A My Materials template contains class or student records.");
+  if (record.kind === "lesson") {
+    if (!only(content, new Set(["title", "status", ...LESSON_MATERIAL_FIELDS]))) throw new LocalStorageError("The backup contains an invalid lesson template shape.");
+  } else if (record.kind === "assessment") {
+    if (!only(content, new Set(["title", "maximumScore", "category", "policyId", "instructions", "assessmentKind", "authoringStatus", "showPoints", "questions"])) || !Array.isArray(content.questions)) throw new LocalStorageError("The backup contains an invalid assessment template shape.");
+    content.questions.forEach((question) => {
+      if (!question?.id || !Array.isArray(question.options) || question.options.some((option) => !option?.id)) throw new LocalStorageError("An assessment template has a question or answer choice without an identifier.");
+    });
+  } else throw new LocalStorageError("The backup contains an unsupported My Materials type.");
+}
+function validateBackupRecord(storeName, record, ids, classIds) { if (!record || typeof record !== "object" || Array.isArray(record)) throw new LocalStorageError("The backup contains an invalid record."); if (storeName === "materials") validateMaterialBackupRecord(record); const now = record.updatedAt || new Date().toISOString(); const safe = storeName === "classes" ? prepareClass(record, null, now) : storeName === "students" ? prepareStudent(record, record.classId, null, now) : storeName === "attendance" ? prepareAttendance(record, null, now) : storeName === "assessments" ? prepareAssessment(record, null, now) : storeName === "scores" ? prepareScore(record, null, now) : storeName === "questions" ? prepareQuestion(record, null, now) : storeName === "questionOptions" ? prepareQuestionOption(record, null, now) : storeName === "lessons" ? prepareLesson(record, null, now) : prepareMaterial(record, null, now); if (ids.has(safe.id)) throw new LocalStorageError("The backup contains duplicate record identifiers."); ids.add(safe.id); if (storeName === "classes") classIds.add(safe.id); return safe; }
 export function validateBackup(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new LocalStorageError("Choose a MATEVOK backup file."); if (value.format !== BACKUP_FORMAT) throw new LocalStorageError("This file is not a MATEVOK backup."); if (value.backupVersion !== BACKUP_VERSION) throw new LocalStorageError("This backup format is not supported by this version of MATEVOK.");
-  if (!value.data || typeof value.data !== "object" || !Array.isArray(value.data.classes) || !Array.isArray(value.data.students) || BACKUP_STORES.slice(2).some((name) => value.data[name] != null && !Array.isArray(value.data[name])) || value.data.classes.length > 10000 || value.data.students.length > 100000 || (value.data.attendance?.length || 0) > 500000 || (value.data.assessments?.length || 0) > 100000 || (value.data.scores?.length || 0) > 1000000 || (value.data.questions?.length || 0) > 1000000 || (value.data.questionOptions?.length || 0) > 4000000 || (value.data.lessons?.length || 0) > 100000) throw new LocalStorageError("The backup has an unsupported data shape.");
-  const ids = new Set(), classIds = new Set(); const classes = value.data.classes.map((entry) => validateBackupRecord("classes", entry, ids, classIds)); const students = value.data.students.map((entry) => validateBackupRecord("students", entry, ids, classIds)); const attendance = (value.data.attendance || []).map((entry) => validateBackupRecord("attendance", entry, ids, classIds)); const assessments = (value.data.assessments || []).map((entry) => validateBackupRecord("assessments", entry, ids, classIds)); const scores = (value.data.scores || []).map((entry) => validateBackupRecord("scores", entry, ids, classIds)); const questions = (value.data.questions || []).map((entry) => validateBackupRecord("questions", entry, ids, classIds)); const questionOptions = (value.data.questionOptions || []).map((entry) => validateBackupRecord("questionOptions", entry, ids, classIds)); const lessons = (value.data.lessons || []).map((entry) => validateBackupRecord("lessons", entry, ids, classIds));
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new LocalStorageError("Choose a MATEVOK backup file."); if (value.format !== BACKUP_FORMAT) throw new LocalStorageError("This file is not a MATEVOK backup."); if (![LEGACY_BACKUP_VERSION, BACKUP_VERSION].includes(value.backupVersion)) throw new LocalStorageError("This backup format is not supported by this version of MATEVOK.");
+  if (!value.data || typeof value.data !== "object" || !Array.isArray(value.data.classes) || !Array.isArray(value.data.students) || BACKUP_STORES.slice(2).some((name) => value.data[name] != null && !Array.isArray(value.data[name])) || value.data.classes.length > 10000 || value.data.students.length > 100000 || (value.data.attendance?.length || 0) > 500000 || (value.data.assessments?.length || 0) > 100000 || (value.data.scores?.length || 0) > 1000000 || (value.data.questions?.length || 0) > 1000000 || (value.data.questionOptions?.length || 0) > 4000000 || (value.data.lessons?.length || 0) > 100000 || (value.data.materials?.length || 0) > 100000) throw new LocalStorageError("The backup has an unsupported data shape.");
+  const ids = new Set(), classIds = new Set(); const classes = value.data.classes.map((entry) => validateBackupRecord("classes", entry, ids, classIds)); const students = value.data.students.map((entry) => validateBackupRecord("students", entry, ids, classIds)); const attendance = (value.data.attendance || []).map((entry) => validateBackupRecord("attendance", entry, ids, classIds)); const assessments = (value.data.assessments || []).map((entry) => validateBackupRecord("assessments", entry, ids, classIds)); const scores = (value.data.scores || []).map((entry) => validateBackupRecord("scores", entry, ids, classIds)); const questions = (value.data.questions || []).map((entry) => validateBackupRecord("questions", entry, ids, classIds)); const questionOptions = (value.data.questionOptions || []).map((entry) => validateBackupRecord("questionOptions", entry, ids, classIds)); const lessons = (value.data.lessons || []).map((entry) => validateBackupRecord("lessons", entry, ids, classIds)); const materials = (value.data.materials || []).map((entry) => validateBackupRecord("materials", entry, ids, classIds));
   const studentsById = new Map(students.map((student) => [student.id, student])); const assessmentsById = new Map(assessments.map((assessment) => [assessment.id, assessment])); const questionsById = new Map(questions.map((question) => [question.id, question])); if (students.some((entry) => !classIds.has(entry.classId))) throw new LocalStorageError("The backup includes a student without a matching class."); if (attendance.some((entry) => !classIds.has(entry.classId) || !studentsById.has(entry.studentId) || studentsById.get(entry.studentId).classId !== entry.classId)) throw new LocalStorageError("The backup includes attendance without matching class and student records."); if (assessments.some((entry) => !classIds.has(entry.classId))) throw new LocalStorageError("The backup includes an assessment without a matching class."); if (scores.some((entry) => !assessmentsById.has(entry.assessmentId) || !studentsById.has(entry.studentId) || assessmentsById.get(entry.assessmentId).classId !== entry.classId || studentsById.get(entry.studentId).classId !== entry.classId || compareDecimal(entry.rawScore, assessmentsById.get(entry.assessmentId).maximumScore) > 0)) throw new LocalStorageError("The backup includes scores without matching class, assessment, student, or maximum score."); if (questions.some((entry) => !assessmentsById.has(entry.assessmentId) || assessmentsById.get(entry.assessmentId).classId !== entry.classId)) throw new LocalStorageError("The backup includes a question without a matching assessment and class."); if (questionOptions.some((entry) => !questionsById.has(entry.questionId) || questionsById.get(entry.questionId).assessmentId !== entry.assessmentId || questionsById.get(entry.questionId).classId !== entry.classId)) throw new LocalStorageError("The backup includes an answer choice without a matching question."); if (lessons.some((entry) => !classIds.has(entry.classId))) throw new LocalStorageError("The backup includes a lesson without a matching class.");
   const attendanceKeys = new Set(); attendance.forEach((entry) => { const key = `${entry.classId}::${entry.date}::${entry.studentId}`; if (attendanceKeys.has(key)) throw new LocalStorageError("The backup includes duplicate attendance statuses for one student and date."); attendanceKeys.add(key); }); const scoreKeys = new Set(); scores.forEach((entry) => { const key = `${entry.assessmentId}::${entry.studentId}`; if (scoreKeys.has(key)) throw new LocalStorageError("The backup includes duplicate scores for one student and assessment."); scoreKeys.add(key); }); const positions = new Set(); questions.forEach((entry) => { const key = `${entry.assessmentId}::${entry.position}`; if (positions.has(key)) throw new LocalStorageError("The backup includes duplicate question positions."); positions.add(key); }); const optionsByQuestion = new Map(); questionOptions.forEach((option) => { const entries = optionsByQuestion.get(option.questionId) || []; entries.push(option); optionsByQuestion.set(option.questionId, entries); }); questions.filter((question) => assessmentsById.get(question.assessmentId)?.authoringStatus === "ready").forEach((question) => validateQuestionReady({ ...question, options: optionsByQuestion.get(question.id) || [] }));
-  return { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, exportedAt: normalizeText(value.exportedAt, 40), data: { classes, students, attendance, assessments, scores, questions, questionOptions, lessons } };
+  if (value.backupVersion === BACKUP_VERSION && BACKUP_STORES.some((name) => !Array.isArray(value.data[name]))) throw new LocalStorageError("The backup has an unsupported data shape.");
+  return { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, exportedAt: normalizeText(value.exportedAt, 40), data: { classes, students, attendance, assessments, scores, questions, questionOptions, lessons, materials } };
 }
-export async function createBackup(indexedDb = globalThis.indexedDB) { const [classes, students, attendance, assessments, scores, questions, questionOptions, lessons] = await Promise.all(BACKUP_STORES.map((name) => getAllRecords(name, indexedDb))); return { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, exportedAt: new Date().toISOString(), appSchemaVersion: LOCAL_SCHEMA_VERSION, data: { classes, students, attendance, assessments, scores, questions, questionOptions, lessons } }; }
+export async function createBackup(indexedDb = globalThis.indexedDB) { return withDatabase(async (db) => { const tx = db.transaction(BACKUP_STORES, "readonly"); const collections = await Promise.all(BACKUP_STORES.map((name) => result(tx.objectStore(name).getAll()))); const data = Object.fromEntries(BACKUP_STORES.map((name, index) => [name, collections[index] || []])); return { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, exportedAt: new Date().toISOString(), appSchemaVersion: LOCAL_SCHEMA_VERSION, data }; }, indexedDb); }
 /** Replacement only. The UI must give a summary and deliberate confirmation first. */
-export async function replaceWithBackup(backup, indexedDb = globalThis.indexedDB) { const safe = validateBackup(backup); return withDatabase(async (db) => { const tx = db.transaction(BACKUP_STORES, "readwrite"); for (const name of BACKUP_STORES) { const store = tx.objectStore(name); (await result(store.getAllKeys())).forEach((key) => store.delete(key)); safe.data[name].forEach((entry) => store.put(entry)); } await done(tx); return { classCount: safe.data.classes.length, studentCount: safe.data.students.length, attendanceCount: safe.data.attendance.length, assessmentCount: safe.data.assessments.length, scoreCount: safe.data.scores.length, questionCount: safe.data.questions.length, optionCount: safe.data.questionOptions.length, lessonCount: safe.data.lessons.length }; }, indexedDb); }
+export async function replaceWithBackup(backup, indexedDb = globalThis.indexedDB) { const safe = validateBackup(backup); return withDatabase(async (db) => { const tx = db.transaction(BACKUP_STORES, "readwrite"); for (const name of BACKUP_STORES) { const store = tx.objectStore(name); (await result(store.getAllKeys())).forEach((key) => store.delete(key)); safe.data[name].forEach((entry) => store.put(entry)); } await done(tx); return { classCount: safe.data.classes.length, studentCount: safe.data.students.length, attendanceCount: safe.data.attendance.length, assessmentCount: safe.data.assessments.length, scoreCount: safe.data.scores.length, questionCount: safe.data.questions.length, optionCount: safe.data.questionOptions.length, lessonCount: safe.data.lessons.length, materialCount: safe.data.materials.length }; }, indexedDb); }

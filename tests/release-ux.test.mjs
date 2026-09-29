@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const app = readFileSync(new URL("../dist/app.js", import.meta.url), "utf8");
+const storage = readFileSync(new URL("../dist/storage.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../dist/styles.css", import.meta.url), "utf8");
 const headers = readFileSync(new URL("../dist/_headers", import.meta.url), "utf8");
@@ -93,7 +94,7 @@ test("class-scoped navigation resolves an active class instead of disabling teac
   assert.match(app, /if \(item instanceof HTMLButtonElement\) item\.disabled = false/);
   assert.match(app, /function requestClassTool\(label\)/);
   assert.match(app, /resolveClassToolDestination\(await listClasses\(\)\)/);
-  assert.match(app, /if \(!state\.activeClass\) \{ requestClassTool\(label\); closeMenu\(\); return; \}/);
+  assert.match(app, /if \(label !== "My Materials" && !state\.activeClass\) \{ requestClassTool\(label\); closeMenu\(\); return; \}/);
   assert.match(app, /prepClass\(null, session\.label\)/);
   assert.match(app, /form\.dataset\.openTool = openTool/);
   assert.match(app, /if \(openTool\) navigateWorkspace\(openTool\)/);
@@ -181,10 +182,30 @@ test("backup recency and the shared Gradebook assessment handoff remain visible 
   assert.match(app, /noteBackupExport\(\)/);
   assert.match(app, /function refreshBackupReminder\(\)/);
   assert.match(app, /noteBackupExport\(\); refreshBackupReminder\(\);/);
+  assert.match(app, /recordBackupDownloadStarted\(backupStatus\(\)\)/);
+  assert.match(app, /downloaded backup somewhere safe/);
+  assert.doesNotMatch(app, /Changes since your last export are still only on this device/);
   assert.match(app, /noteClassroomChange\(\)/);
   assert.match(app, /Create shared assessments and enter scores/);
   assert.match(app, /same shared Gradebook assessments/);
   assert.match(css, /\.backup-recency \{ display: flex;/);
+});
+
+test("backup export encrypts files and restore checks encrypted or legacy input before replacement", () => {
+  assert.match(html, /data-dialog="backup-encrypt"/);
+  assert.match(html, /data-dialog="backup-unlock"/);
+  assert.match(html, /minlength="12"/);
+  assert.equal([...html.matchAll(/name="(?:passphrase|confirmPassphrase)" type="password"[^>]*autocomplete="([^"]+)"/g)].every((match) => match[1] === "off"), true);
+  assert.match(html, /MATEVOK cannot recover a lost passphrase/);
+  assert.match(app, /const encrypted = await encryptBackup\(backup, passphrase\)/);
+  assert.match(app, /isEncryptedBackup\(parsed\)/);
+  assert.match(app, /showBackupRestoreReview\(parsed, false\)/);
+  assert.match(app, /finally \{ input\.value = ""; \}/);
+  assert.match(app, /window\.setTimeout\(\(\) => \{ link\.remove\(\); URL\.revokeObjectURL\(url\); \}, 1000\)/);
+  assert.match(app, /data-restore-security-note/);
+  assert.match(app, /Security warning: this older backup is unencrypted/);
+  const restoreSubmit = app.slice(app.indexOf('dialogs.restore.querySelector("form").addEventListener("submit"'));
+  assert.ok(restoreSubmit.indexOf("elements.replace.checked") < restoreSubmit.indexOf("await replaceWithBackup(state.backup)"), "replacement must remain behind the explicit confirmation check");
 });
 
 test("My Classes keeps its home composition compact and makes existing class information scannable", () => {
@@ -205,7 +226,36 @@ test("My Classes keeps its home composition compact and makes existing class inf
 
 test("strict same-origin CSP does not block startup recovery or the cached shell", () => {
   assert.match(headers, /script-src 'self'/);
-  assert.match(html, /<script src="startup\.js\?v=14"><\/script>/);
+  assert.match(html, /<script src="startup\.js\?v=16"><\/script>/);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/);
   assert.doesNotMatch(app, /serviceWorker\.register/);
+});
+
+test("My Materials is a permanent library separate from active class workspaces", () => {
+  assert.match(html, /data-nav-item="My Materials"/);
+  assert.match(app, /function renderMaterials\(\)/);
+  assert.match(html, /Save a reusable template/);
+  assert.match(app, /Unsaved editor changes are not included/);
+  assert.match(app, /Save another template/);
+  assert.match(app, /confirm\.disabled = false; confirm\.textContent = duplicates\.length/);
+  assert.match(app, /nothing will be overwritten/);
+  assert.match(app, /Search by title/);
+  assert.match(app, /Material type/);
+  assert.match(app, /function beginMaterialAdd\(materialId\)/);
+  assert.match(app, /Choose an active destination class/);
+  assert.match(app, /as an independent Draft/);
+  assert.match(app, /function confirmMaterialAdd\(\)/);
+  assert.match(app, /value\.submitting \|\| !value\.targets\.some/);
+  assert.match(app, /!state\.activeClass && !state\.archivedView && currentLocation\.textContent !== "My Materials"\) return/);
+  assert.match(app, /requestWorkspaceNavigation\("My Classes"\)/);
+  assert.match(app, /label === "My Classes" && currentLocation\.textContent === "My Materials"\) \{ navigateWorkspace\(label\); closeMenu\(\); return; \}/);
+  assert.match(html, /I reviewed this material and want to add an independent Draft/);
+  assert.match(app, /Materials stay on this device\. Include them in your regular backups\./);
+  assert.match(html, /data-restore-summary/);
+  assert.match(app, /\$\{\(data\.materials \|\| \[\]\)\.length\} materials/);
+  assert.match(app, /materialCount\} materials/);
+  assert.match(css, /\.materials-grid \{ display: grid;/);
+  assert.match(css, /\.material-card-actions \.button \{ width: 100%; min-height: 44px;/);
+  assert.match(storage, /BACKUP_STORES = Object\.freeze\(\[[^\]]*"materials"\]\)/);
+  assert.match(storage, /"materials", indexes: \[\["kind", "kind"\], \["title", "title"\]\]/);
 });

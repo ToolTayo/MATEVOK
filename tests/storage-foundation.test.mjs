@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   DATABASE_NAME,
   LOCAL_SCHEMA_VERSION,
+  META_STORE,
   STORE_DEFINITIONS,
   applySchemaUpgrade,
   createLocalId,
@@ -79,6 +80,22 @@ test("upgrade remains additive when the base model already exists", () => {
   applySchemaUpgrade(database, 1, transaction);
   assert.equal(database.stores.size, before);
   assert.equal(database.stores.get("meta").records.length, 2);
+});
+
+test("schema v6 upgrades add My Materials without replacing existing class stores or records", () => {
+  const database = new FakeDatabase(); database.version = 6;
+  database.createObjectStore(META_STORE, { keyPath: "key" });
+  for (const definition of STORE_DEFINITIONS.filter(({ name }) => name !== "materials")) {
+    const store = database.createObjectStore(definition.name, { keyPath: "id" });
+    for (const [name, keyPath] of definition.indexes) store.createIndex(name, keyPath, { unique: false });
+  }
+  const savedClass = { id: "class-preserved", className: "Grade 5" }; database.stores.get("classes").put(savedClass);
+  const transaction = { objectStore: (name) => database.stores.get(name) };
+  applySchemaUpgrade(database, 6, transaction);
+  assert.equal(database.stores.has("materials"), true);
+  assert.equal(database.stores.get("classes").records[0].id, savedClass.id);
+  assert.equal(database.stores.get(META_STORE).records.at(-1).value, LOCAL_SCHEMA_VERSION);
+  assert.equal(LOCAL_SCHEMA_VERSION, 7);
 });
 
 test("record preparation normalizes common fields and rejects unknown stores", () => {

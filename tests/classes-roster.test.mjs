@@ -4,6 +4,7 @@ import { GENERIC_RAW_POLICY, genericRawPercentage, normalizeDecimalInput, scoreD
 import {
   BACKUP_FORMAT,
   BACKUP_VERSION,
+  LEGACY_BACKUP_VERSION,
   LOCAL_SCHEMA_VERSION,
   attendanceCounts,
   createBackup,
@@ -11,12 +12,14 @@ import {
   deleteQuestionPermanently,
   deleteLessonPermanently,
   deleteClassPermanently,
+  deleteMaterialPermanently,
   getAllRecords,
   listClasses,
   listAssessments,
   listAttendanceForDate,
   listAttendanceHistory,
   listLessons,
+  listMaterials,
   listScores,
   listStudents,
   prepareClass,
@@ -41,11 +44,14 @@ import {
   listQuestions,
   copyAuthoredAssessmentToClass,
   copyLessonToClass,
+  materializeMaterialToClass,
   duplicateAuthoredAssessment,
   duplicateLesson,
   updateAssessmentAuthoringStatus,
   moveQuestion,
-  validateBackup
+  validateBackup,
+  saveLessonToMaterials,
+  saveAssessmentToMaterials
 } from "../dist/storage.js";
 
 class MemoryStore {
@@ -66,9 +72,9 @@ class MemoryTransaction {
   set onabort(callback) { this._abort = callback; }
 }
 class MemoryDatabase {
-  constructor() { this.version = 0; this.stores = new Map(); this.objectStoreNames = { contains: (name) => this.stores.has(name) }; }
+  constructor() { this.version = 0; this.stores = new Map(); this.transactions = []; this.objectStoreNames = { contains: (name) => this.stores.has(name) }; }
   createObjectStore(name) { const store = new MemoryStore(name); this.stores.set(name, store); return store; }
-  transaction() { return new MemoryTransaction(this); }
+  transaction(names, mode) { this.transactions.push({ names, mode }); return new MemoryTransaction(this); }
   close() { this.closed = true; }
 }
 class MemoryIndexedDb {
@@ -129,9 +135,12 @@ test("backup round trip preserves IDs and hostile-looking text as ordinary data"
   const backup = await createBackup(source);
   assert.equal(backup.format, BACKUP_FORMAT);
   assert.equal(backup.backupVersion, BACKUP_VERSION);
+  const backupRead = source.db.transactions.at(-1);
+  assert.equal(backupRead.mode, "readonly");
+  assert.deepEqual(backupRead.names, ["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "materials"]);
   const restored = new MemoryIndexedDb();
   const output = await replaceWithBackup(JSON.parse(JSON.stringify(backup)), restored);
-  assert.deepEqual(output, { classCount: 1, studentCount: 1, attendanceCount: 0, assessmentCount: 0, scoreCount: 0, questionCount: 0, optionCount: 0, lessonCount: 0 });
+  assert.deepEqual(output, { classCount: 1, studentCount: 1, attendanceCount: 0, assessmentCount: 0, scoreCount: 0, questionCount: 0, optionCount: 0, lessonCount: 0, materialCount: 0 });
   const classes = await getAllRecords("classes", restored);
   const students = await getAllRecords("students", restored);
   assert.equal(classes[0].id, classroom.id);
@@ -149,6 +158,38 @@ test("backup validation rejects malformed, unsupported, duplicate, and orphaned 
   assert.throws(() => validateBackup(duplicate), /duplicate record identifiers/);
   const orphan = { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: [], students: [prepareStudent({ id: "student-1", fullName: "One" }, "missing-class")] } };
   assert.throws(() => validateBackup(orphan), /without a matching class/);
+});
+
+test("current backups require every collection while legacy backups keep their historical optional collections", () => {
+  const stores = ["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "materials"];
+  const complete = { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: Object.fromEntries(stores.map((store) => [store, []])) };
+  assert.equal(validateBackup(complete).data.materials.length, 0);
+  for (const store of stores) {
+    const truncated = structuredClone(complete);
+    delete truncated.data[store];
+    assert.throws(() => validateBackup(truncated), /unsupported data shape/, `missing ${store} must not be treated as an empty collection`);
+  }
+  const legacy = { format: BACKUP_FORMAT, backupVersion: LEGACY_BACKUP_VERSION, data: { classes: [], students: [] } };
+  assert.equal(validateBackup(legacy).data.attendance.length, 0);
+});
+
+test("invalid restore payloads are rejected before any database transaction can modify existing records", async () => {
+  const idb = new MemoryIndexedDb();
+  const existing = await saveClass({ className: "Keep this class" }, null, idb);
+  await saveStudent({ fullName: "Keep this student" }, existing.id, null, idb);
+  const before = Object.fromEntries([...idb.db.stores].map(([name, store]) => [name, structuredClone([...store.records.entries()])]));
+  const transactionsBefore = idb.db.transactions.length;
+  const invalidPayloads = [
+    null,
+    "",
+    { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: "not-an-array", students: [] } },
+    { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: [], students: [{ id: "orphan", fullName: "Orphan", classId: "missing" }] } }
+  ];
+
+  for (const payload of invalidPayloads) await assert.rejects(replaceWithBackup(payload, idb));
+
+  assert.equal(idb.db.transactions.length, transactionsBefore, "rejected payloads must fail before opening even a read/write transaction");
+  assert.deepEqual(Object.fromEntries([...idb.db.stores].map(([name, store]) => [name, [...store.records.entries()]])), before);
 });
 
 test("schema version remains migration-compatible and class store receives archive support", async () => {
@@ -226,7 +267,7 @@ test("attendance backup round-trips and legacy Phase 2 backups without attendanc
   const output = await replaceWithBackup(backup, restored);
   assert.equal(output.attendanceCount, 1);
   assert.equal((await listAttendanceForDate(classroom.id, "2026-09-28", restored))[0].studentId, student.id);
-  const legacy = validateBackup({ format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students } });
+  const legacy = validateBackup({ format: BACKUP_FORMAT, backupVersion: LEGACY_BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students } });
   assert.deepEqual(legacy.data.attendance, []);
   assert.throws(() => validateBackup({ format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students, attendance: [{ id: "bad", classId: classroom.id, studentId: "missing", date: "2026-09-28", status: "present" }] } }), /attendance without matching/);
   const duplicateAttendance = backup.data.attendance.map((entry, index) => ({ ...entry, id: `${entry.id}-${index}` })); duplicateAttendance.push({ ...backup.data.attendance[0], id: "attendance-extra" });
@@ -276,7 +317,7 @@ test("score-entry validation accepts blanks, zero, decimals, and maximum scores 
 test("gradebook backup restores exact score strings and accepts earlier backups without gradebook stores", async () => {
   const source = new MemoryIndexedDb(); const classroom = await saveClass({ className: "Backup <class>" }, null, source); const student = await saveStudent({ fullName: "Score & student" }, classroom.id, null, source); const assessment = await saveAssessment({ title: "Test <script>", date: "2026-09-28", maximumScore: "25" }, classroom.id, null, source); await saveScores(assessment.id, [{ studentId: student.id, rawScore: "12.345" }], source);
   const backup = await createBackup(source); assert.equal(backup.data.assessments.length, 1); assert.equal(backup.data.scores[0].rawScore, "12.345"); const restored = new MemoryIndexedDb(); const result = await replaceWithBackup(backup, restored); assert.equal(result.scoreCount, 1); assert.equal((await listScores(assessment.id, restored))[0].rawScore, "12.345");
-  const legacy = validateBackup({ format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students, attendance: [] } }); assert.deepEqual(legacy.data.assessments, []); assert.deepEqual(legacy.data.scores, []);
+  const legacy = validateBackup({ format: BACKUP_FORMAT, backupVersion: LEGACY_BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students, attendance: [] } }); assert.deepEqual(legacy.data.assessments, []); assert.deepEqual(legacy.data.scores, []);
   const wrongPolicy = { ...backup.data.assessments[0], id: "assessment-policy", policyId: "unverified-policy" }; assert.throws(() => validateBackup({ format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students, attendance: [], assessments: [wrongPolicy], scores: [] } }), /policy is not available/);
   const impossible = { ...backup.data.scores[0], id: "score-impossible", rawScore: "26" }; assert.throws(() => validateBackup({ format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students, attendance: [], assessments: backup.data.assessments, scores: [impossible] } }), /maximum score/);
 });
@@ -327,6 +368,66 @@ test("cross-class copies create independent Draft lessons and authored assessmen
   assert.equal((await listClasses({}, restored)).length, 2); assert.equal((await listClasses({ archived: true }, restored)).length, 1);
 });
 
+test("My Materials keeps saved lesson templates independent through source-class deletion and template removal", async () => {
+  const idb = new MemoryIndexedDb();
+  const source = await saveClass({ className: "Old term" }, null, idb), target = await saveClass({ className: "New term" }, null, idb);
+  const lesson = await saveLesson({ title: "Evidence lesson", date: "2026-08-02", status: "ready", learningGoals: "Compare evidence", during: "Use <strong>primary sources</strong>", notes: "Teacher-only note" }, source.id, null, idb);
+  const template = await saveLessonToMaterials(lesson.id, idb), sameTitle = await saveLessonToMaterials(lesson.id, idb);
+  assert.notEqual(template.id, sameTitle.id, "saving a duplicate title creates a separate template instead of overwriting");
+  assert.equal(template.classId, undefined); assert.equal(template.content.classId, undefined); assert.equal(template.content.date, undefined);
+  assert.equal(template.content.during, "Use <strong>primary sources</strong>");
+  await setClassArchived(source.id, true, idb); await deleteClassPermanently(source.id, idb);
+  assert.equal((await listMaterials({}, idb)).length, 2, "library entries survive source class archive and permanent deletion");
+  const copy = await materializeMaterialToClass(template.id, target.id, idb);
+  assert.equal(copy.kind, "lesson"); assert.notEqual(copy.item.id, lesson.id); assert.equal(copy.item.classId, target.id); assert.equal(copy.item.status, "draft"); assert.equal(copy.item.date, "");
+  assert.equal(copy.item.during, lesson.during); assert.equal(copy.item.notes, lesson.notes);
+  await saveLesson({ ...copy.item, during: "Target-only edit" }, target.id, copy.item.id, idb);
+  assert.equal((await listMaterials({}, idb)).find((item) => item.id === template.id).content.during, lesson.during, "editing a class copy cannot mutate its template");
+  await deleteMaterialPermanently(template.id, idb);
+  assert.equal((await listLessons(target.id, idb)).find((item) => item.id === copy.item.id).during, "Target-only edit", "deleting a template leaves class copies intact");
+});
+
+test("My Materials assessment snapshots remap complex question graphs, exclude scores, and survive restore", async () => {
+  const idb = new MemoryIndexedDb();
+  const source = await saveClass({ className: "Source class" }, null, idb), target = await saveClass({ className: "Target class" }, null, idb), archived = await saveClass({ className: "Archived target" }, null, idb);
+  const student = await saveStudent({ fullName: "Student, private" }, source.id, null, idb);
+  const assessment = await saveAssessment({ title: "<img src=x onerror=alert(1)>", date: "2026-08-15", maximumScore: "12.5", category: "Quiz", term: "Old school year", assessmentKind: "worksheet", instructions: "<script>not executable</script>", showPoints: true }, source.id, null, idb);
+  await saveAuthoredQuestion({ questionType: "multiple-choice", prompt: "Which answer? <b>" , points: "2.5", options: [{ text: "Wrong", correct: false }, { text: "Correct <img>", correct: true }] }, assessment.id, null, idb);
+  await saveAuthoredQuestion({ questionType: "true-false", prompt: "A factual statement", points: "1", correctBoolean: "false" }, assessment.id, null, idb);
+  await saveAuthoredQuestion({ questionType: "short-answer", prompt: "Explain briefly", points: "3", referenceAnswer: "Reference <answer>" }, assessment.id, null, idb);
+  await saveAuthoredQuestion({ questionType: "essay", prompt: "Write a response", points: "6", guidance: "Use a clear rubric." }, assessment.id, null, idb);
+  await updateAssessmentAuthoringStatus(assessment.id, "ready", idb);
+  await saveScores(assessment.id, [{ studentId: student.id, rawScore: "0" }], idb);
+  const template = await saveAssessmentToMaterials(assessment.id, idb), duplicate = await saveAssessmentToMaterials(assessment.id, idb);
+  assert.notEqual(template.id, duplicate.id, "same-title templates are distinct and no existing item is overwritten");
+  assert.equal(template.classId, undefined); assert.equal(template.content.classId, undefined); assert.equal(template.content.date, undefined); assert.equal(template.content.term, undefined);
+  assert.equal(template.content.authoringStatus, "ready"); assert.equal(template.content.questions.length, 4); assert.equal("scores" in template.content, false);
+  assert.equal(template.content.questions[2].referenceAnswer, "Reference <answer>"); assert.equal(template.content.questions[3].guidance, "Use a clear rubric.");
+  assert.equal(JSON.stringify(template).includes(student.id), false, "student identifiers and scores are not stored in a template");
+  await setClassArchived(archived.id, true, idb);
+  await assert.rejects(() => materializeMaterialToClass(template.id, archived.id, idb), /active destination class/);
+  await deleteClassPermanently(source.id, idb);
+  const copied = await materializeMaterialToClass(template.id, target.id, idb), copiedQuestions = await listQuestions(copied.item.id, idb), templateQuestions = template.content.questions;
+  assert.equal(copied.kind, "assessment"); assert.notEqual(copied.item.id, assessment.id); assert.equal(copied.item.classId, target.id); assert.equal(copied.item.authoringStatus, "draft"); assert.equal(copied.item.term, "");
+  assert.equal((await listScores(copied.item.id, idb)).length, 0); assert.equal(copiedQuestions.length, templateQuestions.length);
+  const templateQuestionIds = new Set(templateQuestions.map((question) => question.id)), templateOptionIds = new Set(templateQuestions.flatMap((question) => question.options.map((option) => option.id)));
+  copiedQuestions.forEach((question, index) => { const original = templateQuestions[index]; assert.equal(templateQuestionIds.has(question.id), false); assert.equal(question.prompt, original.prompt); assert.equal(question.classId, target.id); assert.equal(question.assessmentId, copied.item.id); assert.equal(question.options.length, original.options.length); question.options.forEach((option) => assert.equal(templateOptionIds.has(option.id), false)); });
+  const mc = copiedQuestions[0]; assert.equal(mc.options.find((option) => option.text === "Correct <img>").id, mc.correctOptionId, "correct option references are rewritten to the copied option ID");
+  assert.equal(copiedQuestions[1].correctBoolean, "false"); assert.equal(copiedQuestions[2].referenceAnswer, "Reference <answer>"); assert.equal(copiedQuestions[3].guidance, "Use a clear rubric.");
+  const backup = await createBackup(idb); assert.equal(backup.backupVersion, BACKUP_VERSION); assert.equal(backup.data.materials.length, 2);
+  const malformed = structuredClone(backup); malformed.data.materials[0].content.questions[0].correctOptionId = "not-a-choice"; assert.throws(() => validateBackup(malformed), /answer refers/);
+  const missingQuestionId = structuredClone(backup); delete missingQuestionId.data.materials[0].content.questions[0].id; assert.throws(() => validateBackup(missingQuestionId), /without an identifier/);
+  const missingOptionId = structuredClone(backup); delete missingOptionId.data.materials[0].content.questions[0].options[0].id; assert.throws(() => validateBackup(missingOptionId), /without an identifier/);
+  const classLinkedMaterial = structuredClone(backup); classLinkedMaterial.data.materials[0].content.classId = source.id; assert.throws(() => validateBackup(classLinkedMaterial), /class or student records/);
+  const restored = new MemoryIndexedDb(); await replaceWithBackup(backup, restored); assert.equal((await listMaterials({}, restored)).length, 2); assert.equal((await listScores(copied.item.id, restored)).length, 0);
+  const legacy = { ...backup, backupVersion: LEGACY_BACKUP_VERSION, data: { ...backup.data, materials: undefined } }; const legacyTarget = new MemoryIndexedDb();
+  await replaceWithBackup(legacy, legacyTarget); assert.equal((await listMaterials({}, legacyTarget)).length, 0, "legacy replacement restores with an empty library");
+  await saveAssessment({ ...copied.item, title: "Edited copy" }, target.id, copied.item.id, idb);
+  assert.equal((await listMaterials({}, idb)).find((item) => item.id === template.id).title, assessment.title, "class assessment edits cannot mutate template");
+  await deleteMaterialPermanently(template.id, idb); assert.equal((await getAllRecords("assessments", idb)).some((item) => item.id === copied.item.id), true);
+  await deleteClassPermanently(target.id, idb); assert.equal((await listMaterials({}, idb)).some((item) => item.id === duplicate.id), true, "target deletion also leaves the separate library intact");
+});
+
 test("Lesson Workspace keeps class-scoped plain-text plans editable, duplicable, backup-safe, and bounded", async () => {
   const source = new MemoryIndexedDb();
   const first = await saveClass({ className: "Lesson class" }, null, source); const second = await saveClass({ className: "Other class" }, null, source);
@@ -339,7 +440,7 @@ test("Lesson Workspace keeps class-scoped plain-text plans editable, duplicable,
   await assert.rejects(() => saveLesson({ title: "Too long", learningGoals: "x".repeat(8001) }, first.id, null, source), /too long/);
   const copy = await duplicateLesson(edited.id, source); assert.notEqual(copy.id, edited.id); assert.equal(copy.classId, first.id); assert.equal(copy.status, "draft"); assert.equal(copy.during, edited.during); assert.equal(copy.assessment, edited.assessment);
   const backup = await createBackup(source); assert.equal(backup.data.lessons.length, 2); const restored = new MemoryIndexedDb(); const result = await replaceWithBackup(backup, restored); assert.equal(result.lessonCount, 2); assert.deepEqual((await listLessons(first.id, restored)).map((lesson) => lesson.id).sort(), [edited.id, copy.id].sort());
-  const legacy = validateBackup({ format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students } }); assert.deepEqual(legacy.data.lessons, []);
+  const legacy = validateBackup({ format: BACKUP_FORMAT, backupVersion: LEGACY_BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students } }); assert.deepEqual(legacy.data.lessons, []);
   const orphan = prepareLesson({ ...edited, id: "orphan-lesson", classId: "missing-class" }); assert.throws(() => validateBackup({ format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students, lessons: [orphan] } }), /lesson without a matching class/);
   await deleteLessonPermanently(copy.id, source); assert.equal((await listLessons(first.id, source)).length, 1); await setClassArchived(first.id, true, source); assert.equal((await listLessons(first.id, source)).length, 1); await setClassArchived(first.id, false, source); assert.equal((await listLessons(first.id, source)).length, 1); await deleteClassPermanently(first.id, source); assert.equal((await getAllRecords("lessons", source)).length, 0);
   const started = performance.now(); for (let index = 0; index < 100; index += 1) await saveLesson({ title: `Plan ${index}`, date: `2026-09-${String((index % 28) + 1).padStart(2, "0")}` }, second.id, null, source); assert.equal((await listLessons(second.id, source)).length, 100); assert.ok(performance.now() - started < 1000, "100 local lesson saves should remain responsive");
