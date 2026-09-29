@@ -36,12 +36,30 @@ test("class workspaces keep the roster first and make the current tool visible i
   assert.match(html, /data-nav-item="Attendance"/);
   assert.match(html, /Inside a class/);
   assert.match(app, /document\.querySelectorAll\("\[data-nav-item\]"\)/);
-  assert.match(app, /root\.append\(roster, tools\)/);
+  assert.match(app, /root\.append\(todayWorkspace\(current\), roster, tools\)/);
   assert.match(app, /function renderAuthoring\(\).*setWorkspaceLocation\("Assessment Center"\)/s);
   assert.match(css, /\.workspace-tools-grid \{ display: grid;/);
   assert.match(css, /\.nav-item\.is-current, \.nav-item\[data-current\]/);
   assert.match(css, /\.report-table-wrap--compact \.report-table \{ min-width: 0;/);
   assert.match(css, /html, body \{ max-width: 100%; overflow-x: clip;/);
+});
+
+test("Class Overview derives compact Today actions from existing class records only", () => {
+  assert.match(app, /function todayWorkspace\(current\)/);
+  assert.match(app, /function todayAttendanceCard\(current\)/);
+  assert.match(app, /saved \? "Reopen today" : "Take attendance"/);
+  assert.match(app, /function todayScoresCard\(current\)/);
+  assert.match(app, /overviewScoreCounts/);
+  assert.match(app, /activeStudentIds\.has\(score\.studentId\)/);
+  assert.match(app, /Scores · \$\{assessment\.title\}/);
+  assert.match(app, /of \$\{activeCount\} active scores entered/);
+  assert.match(app, /function todayLessonCard\(current\)/);
+  assert.match(app, /Last edited \$\{lessonUpdatedAt\(lesson\)\}/);
+  assert.match(app, /function todayClassroomCard\(current\)/);
+  assert.match(app, /Start Classroom Mode/);
+  assert.match(app, /todayWorkspace\(current\).*backupReminder\(\)/s);
+  assert.match(css, /\/\* Class Overview: factual next actions derived from existing local records\. \*\//);
+  assert.match(css, /\.today-grid \{ display: grid;/);
 });
 
 test("class-only navigation is explicitly locked until a class is open and then exposes guarded destinations", () => {
@@ -57,6 +75,23 @@ test("class-only navigation is explicitly locked until a class is open and then 
   assert.match(css, /grid-template-columns: 1\.35rem minmax\(0, 1fr\);/);
 });
 
+test("class navigation is grouped in the teacher workflow order without weakening locked controls", () => {
+  const destinations = [
+    "Overview", "Attendance", "Gradebook", "Assessment Center", "Lesson Workspace",
+    "Classroom Mode", "Student Progress", "Reports"
+  ];
+  const positions = destinations.map((label) => html.indexOf(`data-nav-item=\"${label}\"`));
+
+  assert.ok(positions.every((position) => position >= 0));
+  assert.ok(positions.every((position, index) => index === 0 || positions[index - 1] < position));
+  assert.match(html, /id="nav-daily-label">Daily/);
+  assert.match(html, /id="nav-teach-label">Prepare &amp; teach/);
+  assert.match(html, /id="nav-review-label">Review/);
+  assert.match(html, /data-nav-item="Classroom Mode" type="button" disabled/);
+  assert.match(css, /\.nav-item--available:disabled \{ color: #a8bfbc;/);
+  assert.match(css, /\.primary-nav \{ min-height: 0; overflow-y: auto; overscroll-behavior: contain;/);
+});
+
 test("score entry advances only after per-row validation and keeps explicit saving", () => {
   assert.match(app, /function validateScoreRow\(row\)/);
   assert.match(app, /function advanceScoreInput\(studentId, input\)/);
@@ -67,14 +102,54 @@ test("score entry advances only after per-row validation and keeps explicit savi
   assert.match(app, /action\("Save scores", persistScores/);
 });
 
+test("Paste scores is a reviewed, draft-only Gradebook path", () => {
+  assert.match(html, /data-dialog="score-paste"/);
+  assert.match(html, /Blank lines never erase an existing score/);
+  assert.match(html, /name="confirmPaste" type="checkbox" disabled/);
+  assert.match(app, /import \{ reviewPastedScores \} from "\.\/score-paste\.js"/);
+  assert.match(app, /action\("Paste scores", prepScorePaste/);
+  assert.match(app, /function renderScorePasteReview\(\)/);
+  assert.match(app, /replaces an unsaved edit/);
+  assert.match(app, /Remove them before applying so no score can be shifted to the wrong student/);
+  assert.match(app, /function applyPastedScores\(\)/);
+  assert.match(app, /Select Save scores to store/);
+  assert.match(css, /\.score-paste-review-wrap \{ max-height:/);
+});
+
+test("cross-class content copy reviews its destination and creates a safe independent Draft", () => {
+  assert.match(html, /data-dialog="copy-content"/);
+  assert.match(html, /name="confirmCopy" type="checkbox" disabled/);
+  assert.match(html, /Students, scores, attendance, reports, progress, and Classroom Mode data are never copied\./);
+  assert.match(app, /action\("Copy to another class", \(\) => prepCopyContent\("assessment", assessment\)/);
+  assert.match(app, /action\("Copy to another class", \(\) => prepCopyContent\("lesson", lesson\)/);
+  assert.match(app, /function prepCopyContent\(kind, source\)/);
+  assert.match(app, /listClasses\(\)\)\.filter\(\(entry\) => entry\.id !== state\.activeClass\.id\)/);
+  assert.match(app, /copy\.submitting = true/);
+  assert.match(app, /function openCopiedContent\(\)/);
+  assert.match(app, /copyAuthoredAssessmentToClass/);
+  assert.match(app, /copyLessonToClass/);
+  assert.match(css, /\.copy-content-review \{ display: grid;/);
+});
+
 test("Student Progress only calls attendance missing when no statuses were recorded", () => {
   assert.match(app, /attendance\.recorded \? `Attendance rate \$\{attendance\.attendanceRate\}/);
   assert.match(app, /: "No attendance recorded\."/);
 });
 
+test("attendance date changes replace stale controls with a guarded loading state", () => {
+  assert.match(app, /const request = \{\};/);
+  assert.match(app, /state\.attendance = \{ date, loading: true, request \};/);
+  assert.match(app, /if \(state\.attendance\?\.request !== request\) return;/);
+  assert.match(app, /if \(!session \|\| session\.loading\) return;/);
+  assert.match(app, /Opening attendance for \$\{session\.date\}…/);
+  assert.match(app, /attendance-screen--loading/);
+});
+
 test("backup recency and the shared Gradebook assessment handoff remain visible without changing records", () => {
   assert.match(app, /function backupReminder\(\)/);
   assert.match(app, /noteBackupExport\(\)/);
+  assert.match(app, /function refreshBackupReminder\(\)/);
+  assert.match(app, /noteBackupExport\(\); refreshBackupReminder\(\);/);
   assert.match(app, /noteClassroomChange\(\)/);
   assert.match(app, /Create shared assessments and enter scores/);
   assert.match(app, /same shared Gradebook assessments/);

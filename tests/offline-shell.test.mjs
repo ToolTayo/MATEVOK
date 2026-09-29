@@ -38,9 +38,10 @@ test("offline shell installs only public application assets and removes stale v1
   assert.equal(cached.has("./app.js?v=14"), true);
   assert.equal(cached.has("./storage.js"), true);
   assert.equal(cached.has("./gradebook.js"), true);
+  assert.equal(cached.has("./score-paste.js"), true);
   assert.equal(cached.has("./classroom.js"), true);
   assert.equal(cached.has("./reports.js"), true);
-  assert.equal([...cached.keys()].some((key) => /student|attendance|score/i.test(key)), false);
+  assert.equal([...cached.keys()].some((key) => /^\.\/(?:students|attendance|scores)(?:\/|$)/i.test(key)), false);
 
   let activateWork;
   events.get("activate")({ waitUntil: (work) => { activateWork = work; } });

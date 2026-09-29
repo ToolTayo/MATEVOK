@@ -39,6 +39,8 @@ import {
   syncAssessmentMaximumToQuestionTotal,
   questionTotalPoints,
   listQuestions,
+  copyAuthoredAssessmentToClass,
+  copyLessonToClass,
   duplicateAuthoredAssessment,
   duplicateLesson,
   updateAssessmentAuthoringStatus,
@@ -300,6 +302,29 @@ test("Assessment Center keeps authored questions normalized, ready-safe, duplica
   const copied = await duplicateAuthoredAssessment(assessment.id, idb); const copiedQuestions = await listQuestions(copied.id, idb); assert.equal(copied.authoringStatus, "draft"); assert.equal(copiedQuestions.length, 2); assert.notEqual(copiedQuestions[0].id, (await listQuestions(assessment.id, idb))[0].id); assert.equal((await listScores(copied.id, idb)).length, 0);
   const backup = await createBackup(idb); assert.equal(backup.data.questions.length, 4); assert.equal(backup.data.questionOptions.length, 6); const restored = new MemoryIndexedDb(); const result = await replaceWithBackup(backup, restored); assert.equal(result.assessmentCount, 2); assert.equal((await listQuestions(assessment.id, restored)).length, 2);
   await deleteAssessmentPermanently(assessment.id, idb); assert.equal((await listQuestions(assessment.id, idb)).length, 0); assert.equal((await listQuestions(copied.id, idb)).length, 2);
+});
+
+test("cross-class copies create independent Draft lessons and authored assessments without classroom history", async () => {
+  const idb = new MemoryIndexedDb(); const source = await saveClass({ className: "Source <class>" }, null, idb); const target = await saveClass({ className: "Target & class" }, null, idb); const archived = await saveClass({ className: "Archived target" }, null, idb);
+  const sourceStudent = await saveStudent({ fullName: "Source student" }, source.id, null, idb); const targetStudent = await saveStudent({ fullName: "Target student" }, target.id, null, idb);
+  const assessment = await saveAssessment({ title: "Quiz <script>", date: "2026-09-28", maximumScore: "5", assessmentKind: "worksheet", instructions: "Read <carefully>", showPoints: true }, source.id, null, idb);
+  const choice = await saveAuthoredQuestion({ questionType: "multiple-choice", prompt: "Choose <one>", points: "2", options: [{ text: "A & B", correct: false }, { text: "C", correct: true }] }, assessment.id, null, idb);
+  const short = await saveAuthoredQuestion({ questionType: "short-answer", prompt: "Explain why", points: "3", referenceAnswer: "Because evidence." }, assessment.id, null, idb);
+  await updateAssessmentAuthoringStatus(assessment.id, "ready", idb); await saveScores(assessment.id, [{ studentId: sourceStudent.id, rawScore: "0" }], idb);
+  const lesson = await saveLesson({ title: "<Lesson & plan>", date: "2026-09-28", status: "ready", learningGoals: "Use evidence.", during: "Discuss <claims>", notes: "Private & local" }, source.id, null, idb);
+  await setClassArchived(archived.id, true, idb);
+  await assert.rejects(() => copyAuthoredAssessmentToClass(assessment.id, source.id, idb), /another class/);
+  await assert.rejects(() => copyLessonToClass(lesson.id, archived.id, idb), /Restore the destination class/);
+
+  const assessmentCopy = await copyAuthoredAssessmentToClass(assessment.id, target.id, idb); const copiedQuestions = await listQuestions(assessmentCopy.id, idb); const sourceQuestions = await listQuestions(assessment.id, idb);
+  assert.notEqual(assessmentCopy.id, assessment.id); assert.equal(assessmentCopy.classId, target.id); assert.equal(assessmentCopy.authoringStatus, "draft"); assert.equal((await listScores(assessmentCopy.id, idb)).length, 0); assert.equal(copiedQuestions.length, 2);
+  assert.notEqual(copiedQuestions[0].id, sourceQuestions[0].id); assert.equal(copiedQuestions.find((question) => question.questionType === "short-answer").referenceAnswer, "Because evidence.");
+  const copiedChoice = copiedQuestions.find((question) => question.questionType === "multiple-choice"); assert.equal(copiedChoice.options.length, 2); assert.ok(copiedChoice.options.some((option) => option.id === copiedChoice.correctOptionId && option.text === "C")); assert.ok(copiedChoice.options.every((option) => !choice.options.some((sourceOption) => sourceOption.id === option.id)));
+  const lessonCopy = await copyLessonToClass(lesson.id, target.id, idb); assert.notEqual(lessonCopy.id, lesson.id); assert.equal(lessonCopy.classId, target.id); assert.equal(lessonCopy.status, "draft"); assert.equal(lessonCopy.during, lesson.during); assert.equal(lessonCopy.notes, lesson.notes);
+  const backup = await createBackup(idb); const restored = new MemoryIndexedDb(); const restoredResult = await replaceWithBackup(backup, restored); assert.equal(restoredResult.assessmentCount, 2); assert.equal(restoredResult.lessonCount, 2); assert.equal((await listScores(assessmentCopy.id, restored)).length, 0); assert.equal((await listQuestions(assessmentCopy.id, restored)).length, 2);
+  await deleteAssessmentPermanently(assessment.id, idb); await deleteLessonPermanently(lesson.id, idb); assert.equal((await listQuestions(assessmentCopy.id, idb)).length, 2); assert.equal((await listLessons(target.id, idb)).length, 1);
+  await deleteAssessmentPermanently(assessmentCopy.id, idb); await deleteLessonPermanently(lessonCopy.id, idb); assert.equal((await listAssessments(target.id, idb)).length, 0); assert.equal((await listLessons(target.id, idb)).length, 0); assert.equal((await listStudents(target.id, {}, idb))[0].id, targetStudent.id);
+  assert.equal((await listClasses({}, restored)).length, 2); assert.equal((await listClasses({ archived: true }, restored)).length, 1);
 });
 
 test("Lesson Workspace keeps class-scoped plain-text plans editable, duplicable, backup-safe, and bounded", async () => {

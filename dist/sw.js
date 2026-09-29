@@ -7,6 +7,7 @@ const APP_SHELL = [
   "./app.js?v=14",
   "./storage.js",
   "./gradebook.js",
+  "./score-paste.js",
   "./classroom.js",
   "./progress.js",
   "./reports.js",
