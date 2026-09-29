@@ -6,7 +6,7 @@ export function attendanceSummary(entries = []) {
   const counts = Object.fromEntries(ATTENDANCE_STATUSES.map((status) => [status, 0]));
   entries.forEach((entry) => { if (ATTENDANCE_STATUSES.includes(entry?.status)) counts[entry.status] += 1; });
   const recorded = entries.length, rateDenominator = counts.present + counts.late;
-  return Object.freeze({ counts, recorded, rateDenominator, attendanceRate: rateDenominator ? `${genericRawPercentage(String(rateDenominator), String(recorded)).display}` : null });
+  return Object.freeze({ counts, recorded, rateDenominator, attendanceRate: recorded ? `${genericRawPercentage(String(rateDenominator), String(recorded)).display}` : null });
 }
 export function deriveStudentProgress({ student, classId, attendance = [], assessments = [], scores = [] }) {
   const attendanceEntries = attendance.filter((entry) => entry.classId === classId && entry.studentId === student.id).sort((a, b) => b.date.localeCompare(a.date));

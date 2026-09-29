@@ -1,6 +1,6 @@
-# MATEVOK — Teacher Workspace (working title)
+# MATEVOK — Teacher workspace
 
-Teacher Workspace is a lightweight, privacy-first teacher productivity application designed initially for Philippine teachers, while remaining independent of DepEd and any official system. Phase 9 adds **Reports**: four factual, locally derived views of existing class records.
+MATEVOK is a lightweight, privacy-first teacher workspace designed initially for Philippine teachers, while remaining independent of DepEd and any official system. Phase 9 adds **Reports**: four factual, locally derived views of existing class records.
 
 The product principle is **enter once, use everywhere**: a future class and roster should be created once, then shared—by stable local identifiers—across attendance, grades, assessments, lessons, classroom tools, progress, and reports.
 

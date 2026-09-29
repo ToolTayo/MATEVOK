@@ -55,6 +55,12 @@ export function genericRawPercentage(rawScore, maximumScore) {
   return Object.freeze({ rawScore: raw, maximumScore: maximum, display: formatHundredths(hundredths), roundedHundredths: hundredths.toString() });
 }
 
+export function validateScoreInput(value, maximumScore) {
+  if (value == null || String(value).trim() === "") return Object.freeze({ entered: false, rawScore: "", error: null });
+  try { return Object.freeze({ entered: true, rawScore: genericRawPercentage(value, maximumScore).rawScore, error: null }); }
+  catch (error) { return Object.freeze({ entered: true, rawScore: String(value), error: error.message }); }
+}
+
 export function scoreDisplay(rawScore, maximumScore) {
   if (rawScore == null || String(rawScore).trim() === "") return Object.freeze({ entered: false, label: "Not entered" });
   try { return Object.freeze({ entered: true, label: `${rawScore} / ${maximumScore} = ${genericRawPercentage(rawScore, maximumScore).display} raw`, percentage: genericRawPercentage(rawScore, maximumScore) }); }

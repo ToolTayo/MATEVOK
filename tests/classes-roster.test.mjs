@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GENERIC_RAW_POLICY, genericRawPercentage, normalizeDecimalInput, scoreDisplay } from "../dist/gradebook.js";
+import { GENERIC_RAW_POLICY, genericRawPercentage, normalizeDecimalInput, scoreDisplay, validateScoreInput } from "../dist/gradebook.js";
 import {
   BACKUP_FORMAT,
   BACKUP_VERSION,
@@ -140,7 +140,7 @@ test("backup round trip preserves IDs and hostile-looking text as ordinary data"
 });
 
 test("backup validation rejects malformed, unsupported, duplicate, and orphaned records safely", () => {
-  assert.throws(() => validateBackup({}), /not a Teacher Workspace backup/);
+  assert.throws(() => validateBackup({}), /not a MATEVOK backup/);
   assert.throws(() => validateBackup({ format: BACKUP_FORMAT, backupVersion: 9, data: { classes: [], students: [] } }), /not supported/);
   const classRecord = prepareClass({ id: "class-1", className: "One" });
   const duplicate = { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: [classRecord], students: [{ ...prepareStudent({ id: "class-1", fullName: "One" }, "class-1") }] } };
@@ -260,6 +260,15 @@ test("gradebook validates exact decimal scores, maximum changes, archive history
 test("generic percentage arithmetic is explicit, deterministic, and policy-safe", () => {
   assert.equal(normalizeDecimalInput("000.500"), "0.5"); assert.equal(genericRawPercentage("18", "20").display, "90%"); assert.equal(genericRawPercentage("1", "6").display, "16.67%"); assert.equal(genericRawPercentage("1", "800").display, "0.13%"); assert.equal(genericRawPercentage("2.675", "10").display, "26.75%"); assert.equal(genericRawPercentage("0.3", "1").display, "30%"); assert.equal(genericRawPercentage("0", "20").display, "0%"); assert.equal(scoreDisplay("", "20").label, "Not entered");
   assert.throws(() => genericRawPercentage("1.0001", "10"), /three decimal/); assert.throws(() => genericRawPercentage("11", "10"), /greater than/); assert.equal(GENERIC_RAW_POLICY.official, false);
+});
+
+test("score-entry validation accepts blanks, zero, decimals, and maximum scores without treating them alike", () => {
+  assert.deepEqual(validateScoreInput("", "10"), { entered: false, rawScore: "", error: null });
+  assert.deepEqual(validateScoreInput("0", "10"), { entered: true, rawScore: "0", error: null });
+  assert.deepEqual(validateScoreInput("8.500", "10"), { entered: true, rawScore: "8.5", error: null });
+  assert.deepEqual(validateScoreInput("10", "10"), { entered: true, rawScore: "10", error: null });
+  assert.match(validateScoreInput("10.001", "10").error, /greater than/);
+  assert.match(validateScoreInput("not a score", "10").error, /number/);
 });
 
 test("gradebook backup restores exact score strings and accepts earlier backups without gradebook stores", async () => {

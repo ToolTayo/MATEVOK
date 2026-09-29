@@ -1,6 +1,6 @@
 {
-  "name": "Teacher Workspace",
-  "short_name": "Workspace",
+  "name": "MATEVOK",
+  "short_name": "MATEVOK",
   "description": "A private, local-first workspace for teachers.",
   "start_url": "./",
   "display": "standalone",

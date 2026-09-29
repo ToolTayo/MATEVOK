@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveStudentProgress } from "../dist/progress.js";
+import { attendanceSummary, deriveStudentProgress } from "../dist/progress.js";
 
 test("Student Progress derives class-scoped factual attendance and exact raw-score summaries", () => {
   const student = { id: "student-a", fullName: "<script>alert(1)</script> & A" };
   const output = deriveStudentProgress({ student, classId: "class-a", attendance: [{ classId: "class-a", studentId: "student-a", date: "2026-09-03", status: "present" }, { classId: "class-a", studentId: "student-a", date: "2026-09-02", status: "late" }, { classId: "class-a", studentId: "student-a", date: "2026-09-01", status: "absent" }, { classId: "class-a", studentId: "student-a", date: "2026-08-31", status: "excused" }, { classId: "class-a", studentId: "student-b", date: "2026-09-03", status: "present" }], assessments: [{ id: "one", classId: "class-a", title: "Quiz", date: "2026-09-02", maximumScore: "20" }, { id: "two", classId: "class-a", title: "Task", date: "2026-09-01", maximumScore: "10" }, { id: "other", classId: "class-b", title: "Other", date: "2026-09-01", maximumScore: "10" }], scores: [{ assessmentId: "one", classId: "class-a", studentId: "student-a", rawScore: "0" }, { assessmentId: "two", classId: "class-a", studentId: "student-b", rawScore: "10" }] });
   assert.deepEqual(output.attendanceSummary.counts, { present: 1, absent: 1, late: 1, excused: 1 }); assert.equal(output.attendanceSummary.attendanceRate, "50%"); assert.equal(output.assessments.length, 2); assert.equal(output.assessments[0].entered, true); assert.equal(output.assessments[0].rawScore, "0"); assert.equal(output.assessments[0].percentage.display, "0%"); assert.equal(output.assessments[1].entered, false); assert.equal(output.scoreSummary.aggregate.display, "0%");
+});
+
+test("Student Progress keeps zero attendance rates distinct from no attendance records", () => {
+  assert.equal(attendanceSummary([{ status: "absent" }, { status: "absent" }]).attendanceRate, "0%");
+  assert.equal(attendanceSummary([{ status: "excused" }, { status: "excused" }]).attendanceRate, "0%");
+  assert.equal(attendanceSummary([]).attendanceRate, null);
+  assert.equal(attendanceSummary([{ status: "present" }, { status: "absent" }, { status: "late" }, { status: "excused" }]).attendanceRate, "50%");
 });
 
 test("Student Progress has no cached ghosts and remains practical for realistic class history", () => {
