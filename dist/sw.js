@@ -8,6 +8,7 @@ const APP_SHELL = [
   "./storage.js",
   "./gradebook.js",
   "./score-paste.js",
+  "./class-tool-navigation.js",
   "./classroom.js",
   "./progress.js",
   "./reports.js",

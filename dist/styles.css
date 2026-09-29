@@ -412,6 +412,8 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
 .backup-recency.is-reminder { color: #53686d; background: #f7fbf8; border-color: #bfdcd5; }
 .backup-recency-actions { display: flex; flex: 0 0 auto; align-items: center; gap: .65rem; }
 .backup-recency .link-button { min-height: 2rem; font-size: .8rem; }
+.class-tool-choices { display: grid; gap: .6rem; padding: 1rem 1.35rem 0; }
+.class-tool-choices .button { justify-content: flex-start; width: 100%; min-height: 2.9rem; text-align: left; }
 .is-dashboard .storage-strip { width: min(100% - 2.5rem, 74rem); margin: 0 auto 1.3rem; padding: .65rem .8rem; color: #537078; background: #f3f8f6; border: 1px solid #dceae6; border-radius: 10px; }
 .site-footer { justify-content: flex-start; min-height: 3.6rem; padding-top: 1rem; padding-bottom: 1rem; color: #63777b; font-size: .78rem; }
 
@@ -433,4 +435,15 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
   .dashboard-empty-guide { margin-top: .75rem; }
   .backup-recency { align-items: flex-start; flex-direction: column; margin-top: -.2rem; }
   .backup-recency-actions { gap: .8rem; }
+  .class-tool-choices { padding-right: 1rem; padding-left: 1rem; }
+}
+
+@media (max-width: 700px) {
+  .crumb-nav .button, .crumb-nav .link-button,
+  .progress-empty .button, .progress-student-card .button,
+  .assessment-actions .button, .assessment-actions .link-button,
+  .lesson-workspace-heading .button, .lesson-card-actions .button,
+  .gradebook-screen .button, .classroom-grid .button {
+    min-height: 44px;
+  }
 }

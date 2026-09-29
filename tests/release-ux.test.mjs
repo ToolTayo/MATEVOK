@@ -28,6 +28,28 @@ test("workspace context, dialog return focus, and small-screen dialog scrolling 
   assert.match(css, /@media \(max-width: 700px\) \{ \.status-button, \.attendance-date input, \.score-input/);
 });
 
+test("Progress and Lesson search refresh results in place so typing keeps input focus and caret", () => {
+  assert.match(app, /function renderProgressStudentResults\(\)[\s\S]*?host\.replaceChildren\(\.\.\.progressStudentResults\(\)\)/);
+  assert.match(app, /state\.progressSearch = event\.currentTarget\.value; renderProgressStudentResults\(\);/);
+  assert.doesNotMatch(app, /state\.progressSearch = event\.currentTarget\.value; renderProgressWorkspace\(\);/);
+  assert.match(app, /function renderLessonWorkspaceResults\(\)[\s\S]*?host\.replaceChildren\(\.\.\.lessonWorkspaceResults\(current\)\)/);
+  assert.match(app, /state\.lessonSearch = event\.currentTarget\.value; renderLessonWorkspaceResults\(\);/);
+  assert.doesNotMatch(app, /state\.lessonSearch = event\.currentTarget\.value; renderLessonWorkspace\(\);/);
+  assert.match(app, /"data-progress-results"/);
+  assert.match(app, /"data-lesson-results"/);
+});
+
+test("Student Progress explains an empty active roster and links directly to class Overview", () => {
+  assert.match(app, /function progressStudentResults\(\)/);
+  assert.match(app, /if \(!state\.students\.length\)[\s\S]*?No active students yet/);
+  assert.match(app, /Add or restore students in this class’s roster from Overview before reviewing progress/);
+  assert.match(app, /action\("Open class Overview", renderClass, "button button--quiet"\)/);
+});
+
+test("mobile breadcrumb and identified module actions have practical 44px touch targets", () => {
+  assert.match(css, /@media \(max-width: 700px\) \{\s*\.crumb-nav \.button, \.crumb-nav \.link-button,[\s\S]*?min-height: 44px;/);
+});
+
 test("class workspaces keep the roster first and make the current tool visible in navigation", () => {
   assert.match(html, /data-nav-item="My Classes"/);
   assert.match(html, /data-nav-item="Overview"/);
@@ -62,12 +84,21 @@ test("Class Overview derives compact Today actions from existing class records o
   assert.match(css, /\.today-grid \{ display: grid;/);
 });
 
-test("class-only navigation is explicitly locked until a class is open and then exposes guarded destinations", () => {
+test("class-scoped navigation resolves an active class instead of disabling teacher tools", () => {
   assert.match(html, /<p class="nav-label" id="class-tools-label">Inside a class<\/p>/);
-  assert.match(html, /Open a class to use these tools\./);
-  assert.match(html, /<button class="nav-item nav-item--available" data-nav-item="Attendance" type="button" disabled/);
+  assert.match(html, /Choose a class to open a tool\./);
+  assert.match(html, /<button class="nav-item nav-item--available" data-nav-item="Attendance" type="button" aria-describedby="class-tools-hint"/);
+  assert.doesNotMatch(html, /data-nav-item="Attendance" type="button" disabled/);
   assert.match(app, /classIsOpen = Boolean\(state\.activeClass\)/);
-  assert.match(app, /item\.disabled = !classIsOpen/);
+  assert.match(app, /if \(item instanceof HTMLButtonElement\) item\.disabled = false/);
+  assert.match(app, /function requestClassTool\(label\)/);
+  assert.match(app, /resolveClassToolDestination\(await listClasses\(\)\)/);
+  assert.match(app, /if \(!state\.activeClass\) \{ requestClassTool\(label\); closeMenu\(\); return; \}/);
+  assert.match(app, /prepClass\(null, session\.label\)/);
+  assert.match(app, /form\.dataset\.openTool = openTool/);
+  assert.match(app, /if \(openTool\) navigateWorkspace\(openTool\)/);
+  assert.match(html, /data-dialog="class-tool"/);
+  assert.match(html, /data-class-tool-choices/);
   assert.match(app, /function requestScoreExit\(next\)/);
   assert.match(html, /data-dialog="leave-scores"/);
   assert.match(app, /data-class-tool": "Reports"/);
@@ -75,7 +106,7 @@ test("class-only navigation is explicitly locked until a class is open and then 
   assert.match(css, /grid-template-columns: 1\.35rem minmax\(0, 1fr\);/);
 });
 
-test("class navigation is grouped in the teacher workflow order without weakening locked controls", () => {
+test("class navigation is grouped in the teacher workflow order while tools remain available to choose a class", () => {
   const destinations = [
     "Overview", "Attendance", "Gradebook", "Assessment Center", "Lesson Workspace",
     "Classroom Mode", "Student Progress", "Reports"
@@ -87,7 +118,7 @@ test("class navigation is grouped in the teacher workflow order without weakenin
   assert.match(html, /id="nav-daily-label">Daily/);
   assert.match(html, /id="nav-teach-label">Prepare &amp; teach/);
   assert.match(html, /id="nav-review-label">Review/);
-  assert.match(html, /data-nav-item="Classroom Mode" type="button" disabled/);
+  assert.doesNotMatch(html, /data-nav-item="Classroom Mode" type="button" disabled/);
   assert.match(css, /\.nav-item--available:disabled \{ color: #a8bfbc;/);
   assert.match(css, /\.primary-nav \{ min-height: 0; overflow-y: auto; overscroll-behavior: contain;/);
 });

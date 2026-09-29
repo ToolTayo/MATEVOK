@@ -39,6 +39,7 @@ test("offline shell installs only public application assets and removes stale v1
   assert.equal(cached.has("./storage.js"), true);
   assert.equal(cached.has("./gradebook.js"), true);
   assert.equal(cached.has("./score-paste.js"), true);
+  assert.equal(cached.has("./class-tool-navigation.js"), true);
   assert.equal(cached.has("./classroom.js"), true);
   assert.equal(cached.has("./reports.js"), true);
   assert.equal([...cached.keys()].some((key) => /^\.\/(?:students|attendance|scores)(?:\/|$)/i.test(key)), false);
