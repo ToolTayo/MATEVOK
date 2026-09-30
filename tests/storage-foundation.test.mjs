@@ -59,6 +59,14 @@ class FakeIndexedDb {
   }
 }
 
+class BlockedThenSuccessfulIndexedDb extends FakeIndexedDb {
+  open() {
+    const request = { result: this.database, oldVersion: 0, transaction: { objectStore: (name) => this.database.stores.get(name) } };
+    queueMicrotask(() => { request.onupgradeneeded?.(); request.onblocked?.(); request.onsuccess?.(); });
+    return request;
+  }
+}
+
 test("the current schema creates the complete shared local data model", () => {
   const database = new FakeDatabase();
   const transaction = { objectStore: (name) => database.stores.get(name) };
@@ -95,7 +103,24 @@ test("schema v6 upgrades add My Materials without replacing existing class store
   assert.equal(database.stores.has("materials"), true);
   assert.equal(database.stores.get("classes").records[0].id, savedClass.id);
   assert.equal(database.stores.get(META_STORE).records.at(-1).value, LOCAL_SCHEMA_VERSION);
-  assert.equal(LOCAL_SCHEMA_VERSION, 7);
+  assert.equal(LOCAL_SCHEMA_VERSION, 8);
+});
+
+test("schema v7 advances the compatibility barrier without replacing existing records or stores", () => {
+  const database = new FakeDatabase(); database.version = 7;
+  database.createObjectStore(META_STORE, { keyPath: "key" });
+  for (const definition of STORE_DEFINITIONS) {
+    const store = database.createObjectStore(definition.name, { keyPath: "id" });
+    for (const [name, keyPath] of definition.indexes) store.createIndex(name, keyPath, { unique: false });
+  }
+  const savedClass = { id: "class-v7", className: "Preserved class" }, savedMaterial = { id: "material-v7", title: "Preserved template" };
+  database.stores.get("classes").put(savedClass); database.stores.get("materials").put(savedMaterial);
+  const originalStores = database.stores.size, transaction = { objectStore: (name) => database.stores.get(name) };
+  applySchemaUpgrade(database, 7, transaction);
+  assert.equal(database.stores.size, originalStores);
+  assert.equal(database.stores.get("classes").records[0].id, savedClass.id);
+  assert.equal(database.stores.get("materials").records[0].id, savedMaterial.id);
+  assert.equal(database.stores.get(META_STORE).records.at(-1).value, 8);
 });
 
 test("record preparation normalizes common fields and rejects unknown stores", () => {
@@ -110,6 +135,13 @@ test("record preparation normalizes common fields and rejects unknown stores", (
 
 test("storage initialization gives a recoverable message when IndexedDB is unavailable", async () => {
   await assert.rejects(openTeacherWorkspaceDb(null), /does not support private device storage/);
+});
+
+test("a blocked upgrade closes a database connection if IndexedDB later succeeds", async () => {
+  const indexedDb = new BlockedThenSuccessfulIndexedDb();
+  await assert.rejects(openTeacherWorkspaceDb(indexedDb), /Close other MATEVOK tabs/);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(indexedDb.database.closed, true, "late success must not leak a connection that can block another upgrade");
 });
 
 test("storage initialization creates and reads the current schema metadata", async () => {

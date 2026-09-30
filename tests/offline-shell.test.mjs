@@ -24,7 +24,7 @@ globalThis.self = {
 };
 globalThis.caches = {
   open: async () => cache,
-  keys: async () => ["teacher-workspace-shell-v13", "teacher-workspace-shell-v14", "teacher-workspace-shell-v15", "old-shell", "teacher-workspace-shell-v16"],
+  keys: async () => ["teacher-workspace-shell-v13", "teacher-workspace-shell-v14", "teacher-workspace-shell-v15", "old-shell", "teacher-workspace-shell-v16", "teacher-workspace-shell-v17", "teacher-workspace-shell-v18", "teacher-workspace-shell-v19", "teacher-workspace-shell-v20", "teacher-workspace-shell-v21", "teacher-workspace-shell-v22"],
   delete: async (key) => { deleted.push(key); return true; },
   match: async (request) => cached.get(typeof request === "string" ? request : request.url)
 };
@@ -61,19 +61,21 @@ test("precache covers every local static dependency of the cold-start scripts", 
   }
 });
 
-test("offline shell installs the encrypted-backup module and removes stale application caches", async () => {
+test("offline shell installs startup modules and removes stale application caches", async () => {
   let installWork;
   events.get("install")({ waitUntil: (work) => { installWork = work; } });
   await installWork;
   assert.equal(cached.has("./index.html"), true);
-  assert.equal(cached.has("./startup.js?v=16"), true);
-  assert.equal(cached.has("./app.js?v=16"), true);
+  assert.equal(cached.has("./startup.js?v=22"), true);
+  assert.equal(cached.has("./app.js?v=22"), true);
+  assert.equal(cached.has("./workspace-lock.js"), true);
   assert.equal(cached.has("./storage.js"), true);
   assert.equal(cached.has("./backup-status.js"), true);
   assert.equal(cached.has("./backup-crypto.js"), true);
   assert.equal(cached.has("./gradebook.js"), true);
   assert.equal(cached.has("./score-paste.js"), true);
   assert.equal(cached.has("./class-tool-navigation.js"), true);
+  assert.equal(cached.has("./attendance-keyboard.js"), true);
   assert.equal(cached.has("./classroom.js"), true);
   assert.equal(cached.has("./reports.js"), true);
   assert.equal([...cached.keys()].some((key) => /^\.\/(?:students|attendance|scores)(?:\/|$)/i.test(key)), false);
@@ -81,7 +83,7 @@ test("offline shell installs the encrypted-backup module and removes stale appli
   let activateWork;
   events.get("activate")({ waitUntil: (work) => { activateWork = work; } });
   await activateWork;
-  assert.deepEqual(deleted, ["teacher-workspace-shell-v13", "teacher-workspace-shell-v14", "teacher-workspace-shell-v15", "old-shell"]);
+  assert.deepEqual(deleted, ["teacher-workspace-shell-v13", "teacher-workspace-shell-v14", "teacher-workspace-shell-v15", "old-shell", "teacher-workspace-shell-v16", "teacher-workspace-shell-v17", "teacher-workspace-shell-v18", "teacher-workspace-shell-v19", "teacher-workspace-shell-v20", "teacher-workspace-shell-v21"]);
 });
 
 test("offline navigation falls back to the cached application shell", async () => {

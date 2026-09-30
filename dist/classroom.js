@@ -33,6 +33,13 @@ export function generateBalancedGroups(students, requestedCount, rng = Math.rand
   for (let group = 0; group < count; group += 1) { const size = base + (group < remainder ? 1 : 0); groups.push(shuffledStudents.slice(cursor, cursor + size).map((student) => student.id)); cursor += size; }
   return groups;
 }
+export function generateBalancedGroupsBySize(students, requestedSize, rng = Math.random) {
+  const eligible = eligibleStudents(students), size = Number(requestedSize);
+  if (!eligible.length) throw new RangeError("Add an active student before making groups.");
+  if (!Number.isInteger(size) || size < 1) throw new RangeError(`Enter a whole-number maximum group size from 1 to ${eligible.length}.`);
+  if (size > eligible.length) throw new RangeError(`Maximum group size cannot exceed the ${eligible.length} active students.`);
+  return generateBalancedGroups(eligible, Math.ceil(eligible.length / size), rng);
+}
 export function groupsPlainText(groups, students) { const byId = new Map(eligibleStudents(students).map((student) => [student.id, student.fullName])); return groups.map((group, index) => `Group ${index + 1}\n${group.map((id) => `- ${byId.get(id) || "Student no longer active"}`).join("\n")}`).join("\n\n"); }
 
 export function createTimer(durationMs = 0) { const duration = Math.max(0, Math.floor(Number(durationMs) || 0)); return { durationMs: duration, remainingMs: duration, deadlineMs: null, status: duration ? "ready" : "idle" }; }

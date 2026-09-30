@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { GENERIC_RAW_POLICY, genericRawPercentage, normalizeDecimalInput, scoreDisplay, validateScoreInput } from "../dist/gradebook.js";
+import { deriveStudentProgress } from "../dist/progress.js";
+import { deriveAssessmentResults, deriveAttendanceSummary } from "../dist/reports.js";
 import {
   BACKUP_FORMAT,
   BACKUP_VERSION,
   LEGACY_BACKUP_VERSION,
   LOCAL_SCHEMA_VERSION,
   attendanceCounts,
+  copyActiveRosterToEmptyClass,
   createBackup,
   deleteAssessmentPermanently,
   deleteQuestionPermanently,
@@ -16,11 +19,13 @@ import {
   getAllRecords,
   listClasses,
   listAssessments,
+  listAttendanceRecords,
   listAttendanceForDate,
   listAttendanceHistory,
   listLessons,
   listMaterials,
   listScores,
+  listScoresForClass,
   listStudents,
   prepareClass,
   prepareAssessment,
@@ -55,11 +60,12 @@ import {
 } from "../dist/storage.js";
 
 class MemoryStore {
-  constructor(name) { this.name = name; this.records = new Map(); this.indexes = []; this.indexNames = { contains: (value) => this.indexes.some((index) => index.name === value) }; }
+  constructor(name) { this.name = name; this.records = new Map(); this.indexes = []; this.getAllCalls = 0; this.indexReads = []; this.indexNames = { contains: (value) => this.indexes.some((index) => index.name === value) }; }
   createIndex(name, keyPath, options) { this.indexes.push({ name, keyPath, options }); }
   put(value) { this.records.set(value.id ?? value.key, structuredClone(value)); }
   get(key) { return request(this.records.get(key)); }
-  getAll() { return request([...this.records.values()].map((value) => structuredClone(value))); }
+  getAll() { this.getAllCalls += 1; return request([...this.records.values()].map((value) => structuredClone(value))); }
+  index(name) { const definition = this.indexes.find((item) => item.name === name); if (!definition) throw new Error(`Missing index ${name}`); return { getAll: (key) => { this.indexReads.push({ name, key }); return request([...this.records.values()].filter((record) => record[definition.keyPath] === key).map((value) => structuredClone(value))); } }; }
   getAllKeys() { return request([...this.records.keys()]); }
   delete(key) { this.records.delete(key); }
 }
@@ -116,16 +122,125 @@ test("bulk roster review normalizes harmless formatting and warns about repeats 
   assert.notEqual(prepareStudent({ fullName: "Maria Santos" }, "class-1").id, prepareStudent({ fullName: "Maria Santos" }, "class-1").id);
 });
 
+test("copying a roster creates fresh class-owned records without copying history and uses the classId index", async () => {
+  const idb = new MemoryIndexedDb();
+  const source = await saveClass({ className: "Science · Section A" }, null, idb);
+  const target = await saveClass({ className: "Math · Section A" }, null, idb);
+  const sourceStudents = await saveStudents(Array.from({ length: 48 }, (_, index) => ({ fullName: index === 0 ? "<img src=x onerror=alert(1)> Student" : `Student ${String(index + 1).padStart(2, "0")}` })), source.id, idb);
+  await setStudentArchived(sourceStudents[47].id, true, idb);
+  const activeSource = await listStudents(source.id, {}, idb);
+  const assessment = await saveAssessment({ title: "Source-only check", date: "2026-09-29", maximumScore: "10" }, source.id, null, idb);
+  await saveScores(assessment.id, [{ studentId: activeSource[0].id, rawScore: "0" }, { studentId: activeSource[1].id, rawScore: "8.5" }], idb);
+  await saveAttendance(source.id, "2026-09-29", activeSource.map((student) => ({ studentId: student.id, status: "present" })), idb);
+  for (const store of idb.db.stores.values()) { store.getAllCalls = 0; store.indexReads = []; }
+
+  const copied = await copyActiveRosterToEmptyClass(source.id, target.id, idb);
+  const targetStudents = await listStudents(target.id, {}, idb);
+  assert.equal(copied.length, 47);
+  assert.equal(targetStudents.length, 47);
+  assert.ok(copied.every((student) => student.classId === target.id && !student.archivedAt));
+  assert.equal(new Set(copied.map((student) => student.id)).size, copied.length);
+  assert.equal(copied.some((student) => sourceStudents.some((sourceStudent) => sourceStudent.id === student.id)), false);
+  assert.deepEqual(targetStudents.map((student) => student.fullName).sort(), activeSource.map((student) => student.fullName).sort());
+  assert.ok(targetStudents.some((student) => student.fullName === "<img src=x onerror=alert(1)> Student"), "hostile-looking names remain plain text data");
+  assert.equal((await listAttendanceRecords(target.id, idb)).length, 0);
+  assert.equal((await listScoresForClass(target.id, idb)).length, 0);
+  assert.equal((await listScoresForClass(source.id, idb)).length, 2);
+  const studentStore = idb.db.stores.get("students");
+  assert.equal(studentStore.getAllCalls, 0, "roster copying must not scan all student records");
+  assert.deepEqual(studentStore.indexReads, [{ name: "classId", key: source.id }, { name: "classId", key: target.id }, { name: "classId", key: target.id }]);
+
+  const backup = await createBackup(idb), restored = new MemoryIndexedDb();
+  await replaceWithBackup(backup, restored);
+  assert.equal((await listStudents(target.id, {}, restored)).length, 47, "existing backup format includes copied students normally");
+  await deleteClassPermanently(source.id, idb);
+  assert.equal((await listStudents(target.id, {}, idb)).length, 47, "the destination roster is independent of its source class");
+});
+
+test("roster copying refuses same, archived or occupied destinations, and empty sources without changing records", async () => {
+  const idb = new MemoryIndexedDb();
+  const source = await saveClass({ className: "Source" }, null, idb);
+  const empty = await saveClass({ className: "Empty" }, null, idb);
+  const occupied = await saveClass({ className: "Occupied" }, null, idb);
+  const archivedTarget = await saveClass({ className: "Archived target" }, null, idb);
+  const archivedRosterTarget = await saveClass({ className: "Archived roster target" }, null, idb);
+  await saveStudents([{ fullName: "Source student" }], source.id, idb);
+  const existing = await saveStudent({ fullName: "Existing student" }, occupied.id, null, idb);
+  const archivedOnly = await saveStudent({ fullName: "Archived target student" }, archivedTarget.id, null, idb);
+  await setStudentArchived(archivedOnly.id, true, idb);
+  const archivedInActiveClass = await saveStudent({ fullName: "Archived roster student" }, archivedRosterTarget.id, null, idb);
+  await setStudentArchived(archivedInActiveClass.id, true, idb);
+  await setClassArchived(archivedTarget.id, true, idb);
+
+  await assert.rejects(() => copyActiveRosterToEmptyClass(source.id, source.id, idb), /different class/);
+  await assert.rejects(() => copyActiveRosterToEmptyClass(source.id, occupied.id, idb), /already has a student roster/);
+  await assert.rejects(() => copyActiveRosterToEmptyClass(source.id, archivedTarget.id, idb), /Restore the destination class/);
+  await assert.rejects(() => copyActiveRosterToEmptyClass(source.id, archivedRosterTarget.id, idb), /already has a student roster/);
+  await assert.rejects(() => copyActiveRosterToEmptyClass(empty.id, occupied.id, idb), /already has a student roster/);
+  const studentless = await saveClass({ className: "Studentless source" }, null, idb);
+  await assert.rejects(() => copyActiveRosterToEmptyClass(studentless.id, empty.id, idb), /no active students/);
+  assert.deepEqual((await listStudents(occupied.id, {}, idb)).map((student) => student.id), [existing.id]);
+  assert.equal((await listStudents(empty.id, {}, idb)).length, 0);
+  assert.equal((await listStudents(archivedTarget.id, { archived: true }, idb)).length, 1);
+});
+
+test("an archived term class is a read-only source for a fresh independent roster", async () => {
+  const idb = new MemoryIndexedDb();
+  const source = await saveClass({ className: "Science · Term 1" }, null, idb);
+  const target = await saveClass({ className: "Science · Term 2" }, null, idb);
+  const students = await saveStudents([{ fullName: "A Student" }, { fullName: "B Student" }, { fullName: "C Student" }], source.id, idb);
+  await setStudentArchived(students[2].id, true, idb);
+  const activeStudents = await listStudents(source.id, {}, idb);
+  const assessment = await saveAssessment({ title: "Term 1 check", date: "2026-09-29", maximumScore: "10" }, source.id, null, idb);
+  await saveScores(assessment.id, [{ studentId: activeStudents[0].id, rawScore: "0" }], idb);
+  await saveAttendance(source.id, "2026-09-29", activeStudents.map((student) => ({ studentId: student.id, status: "absent" })), idb);
+  await setClassArchived(source.id, true, idb);
+
+  const copied = await copyActiveRosterToEmptyClass(source.id, target.id, idb);
+  const targetStudents = await listStudents(target.id, {}, idb);
+  assert.equal(copied.length, 2);
+  assert.deepEqual(targetStudents.map((student) => student.fullName), ["A Student", "B Student"]);
+  assert.ok(targetStudents.every((student) => student.classId === target.id));
+  assert.ok(targetStudents.every((student) => !students.some((sourceStudent) => sourceStudent.id === student.id)));
+  assert.equal((await listAttendanceRecords(target.id, idb)).length, 0);
+  assert.equal((await listScoresForClass(target.id, idb)).length, 0);
+  assert.equal((await listAttendanceRecords(source.id, idb)).length, 2);
+  assert.equal((await listScoresForClass(source.id, idb))[0].rawScore, "0");
+  assert.equal((await listClasses({ archived: true }, idb)).some((item) => item.id === source.id), true);
+});
+
 test("permanent class deletion only cleans up records related to that class", async () => {
   const idb = new MemoryIndexedDb();
   const a = await saveClass({ className: "Class A" }, null, idb);
   const b = await saveClass({ className: "Class B" }, null, idb);
-  await saveStudents([{ fullName: "A Student" }, { fullName: "Another A Student" }], a.id, idb);
-  await saveStudent({ fullName: "B Student" }, b.id, null, idb);
+  const studentsA = await saveStudents([{ fullName: "A Student" }, { fullName: "Another A Student" }], a.id, idb);
+  const studentB = await saveStudent({ fullName: "B Student" }, b.id, null, idb);
+  const assessmentA = await saveAssessment({ title: "A check", date: "2026-09-29", maximumScore: "10" }, a.id, null, idb);
+  const assessmentB = await saveAssessment({ title: "B check", date: "2026-09-29", maximumScore: "10" }, b.id, null, idb);
+  await saveScores(assessmentA.id, [{ studentId: studentsA[0].id, rawScore: "0" }], idb);
+  await saveScores(assessmentB.id, [{ studentId: studentB.id, rawScore: "8" }], idb);
+  await saveAttendance(a.id, "2026-09-29", studentsA.map((student) => ({ studentId: student.id, status: "present" })), idb);
+  await saveAttendance(b.id, "2026-09-29", [{ studentId: studentB.id, status: "late" }], idb);
+  await saveLesson({ title: "A lesson", learningGoal: "Practice" }, a.id, null, idb);
+  await saveLesson({ title: "B lesson", learningGoal: "Review" }, b.id, null, idb);
+  await saveAuthoredQuestion({ questionType: "multiple-choice", prompt: "A question", points: "1", options: [{ text: "A1" }, { text: "A2" }] }, assessmentA.id, null, idb);
+  for (const store of idb.db.stores.values()) { store.getAllCalls = 0; store.indexReads = []; }
   await deleteClassPermanently(a.id, idb);
+  for (const name of ["students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons"]) {
+    const store = idb.db.stores.get(name);
+    assert.equal(store.getAllCalls, 0, `${name} deletion should not scan unrelated class records`);
+    assert.ok(store.indexReads.some((read) => read.name === "classId" && read.key === a.id), `${name} deletion should use the classId index`);
+  }
   assert.deepEqual((await listClasses({}, idb)).map((entry) => entry.id), [b.id]);
   assert.equal((await listStudents(a.id, {}, idb)).length, 0);
   assert.equal((await listStudents(b.id, {}, idb)).length, 1);
+  assert.equal((await listAttendanceRecords(a.id, idb)).length, 0);
+  assert.equal((await listAttendanceRecords(b.id, idb)).length, 1);
+  assert.equal((await listAssessments(a.id, idb)).length, 0);
+  assert.equal((await listScoresForClass(a.id, idb)).length, 0);
+  assert.equal((await listScoresForClass(b.id, idb)).length, 1);
+  assert.equal((await listLessons(a.id, idb)).length, 0);
+  assert.equal((await listLessons(b.id, idb)).length, 1);
 });
 
 test("backup round trip preserves IDs and hostile-looking text as ordinary data", async () => {
@@ -217,6 +332,130 @@ test("class list and roster operations remain practical with realistic and large
   assert.ok(elapsed < 500, `synthetic list operations took ${elapsed}ms`);
 });
 
+test("multi-class class lists count hundreds of students through the classId index without scanning the student store", async () => {
+  const idb = new MemoryIndexedDb(), classes = [];
+  for (let classNumber = 0; classNumber < 11; classNumber += 1) {
+    const classroom = await saveClass({ className: `${classNumber < 8 ? "Active" : "Archived"} ${String(classNumber).padStart(2, "0")}` }, null, idb);
+    classes.push(classroom);
+    const students = await saveStudents(Array.from({ length: 40 }, (_, index) => ({ fullName: `Student ${classNumber}-${String(index + 1).padStart(2, "0")}` })), classroom.id, idb);
+    if (classNumber === 0 || classNumber === 8) await setStudentArchived(students[39].id, true, idb);
+    if (classNumber >= 8) await setClassArchived(classroom.id, true, idb);
+  }
+  const studentStore = idb.db.stores.get("students"); studentStore.getAllCalls = 0; studentStore.indexReads = [];
+  const activeClasses = await listClasses({}, idb);
+  assert.equal(activeClasses.length, 8);
+  assert.deepEqual(activeClasses.map((entry) => entry.studentCount), [39, 40, 40, 40, 40, 40, 40, 40]);
+  assert.equal(studentStore.getAllCalls, 0);
+  assert.deepEqual(studentStore.indexReads.map((read) => read.key), classes.slice(0, 8).map((entry) => entry.id));
+
+  studentStore.indexReads = [];
+  const archivedClasses = await listClasses({ archived: true }, idb);
+  assert.equal(archivedClasses.length, 3);
+  assert.deepEqual(archivedClasses.map((entry) => entry.studentCount), [39, 40, 40]);
+  assert.equal(studentStore.getAllCalls, 0);
+  assert.deepEqual(studentStore.indexReads.map((read) => read.key), classes.slice(8).map((entry) => entry.id));
+});
+
+test("multi-class teacher workflow keeps attendance, score history, reusable materials, and reports scoped across 320 students", async () => {
+  const idb = new MemoryIndexedDb(), classes = [], rosters = [], assessments = [];
+  for (let classNumber = 0; classNumber < 8; classNumber += 1) {
+    const classroom = await saveClass({ className: `Subject ${classNumber + 1}` }, null, idb);
+    classes.push(classroom);
+    rosters.push(await saveStudents(Array.from({ length: 40 }, (_, index) => ({ fullName: `Student ${String(index + 1).padStart(2, "0")}` })), classroom.id, idb));
+    assessments.push(await saveAssessment({ title: "Weekly check", date: "2026-09-29", maximumScore: "20" }, classroom.id, null, idb));
+    if (classNumber === 0) await saveScores(assessments[classNumber].id, [{ studentId: rosters[classNumber][0].id, rawScore: "0" }, { studentId: rosters[classNumber][1].id, rawScore: "15.5" }], idb);
+    else await saveScores(assessments[classNumber].id, rosters[classNumber].map((student) => ({ studentId: student.id, rawScore: "12" })), idb);
+  }
+  const primary = await listStudents(classes[0].id, {}, idb);
+  await saveAttendance(classes[0].id, "2026-09-28", primary.map((student, index) => ({ studentId: student.id, status: index === 0 ? "absent" : "present" })), idb);
+  await saveAttendance(classes[0].id, "2026-09-29", primary.map((student, index) => ({ studentId: student.id, status: index === 0 ? "late" : "present" })), idb);
+  const corrected = await listAttendanceForDate(classes[0].id, "2026-09-29", idb);
+  await saveAttendance(classes[0].id, "2026-09-29", corrected.map((entry) => ({ studentId: entry.studentId, status: entry.studentId === primary[0].id ? "present" : entry.status })), idb);
+  await setStudentArchived(primary[39].id, true, idb);
+
+  const question = await saveAuthoredQuestion({ questionType: "multiple-choice", prompt: "Which answer is supported?", points: "2", options: [{ text: "A", correct: true }, { text: "B" }] }, assessments[0].id, null, idb);
+  const lesson = await saveLesson({ title: "Use evidence", learningGoals: "Support a claim with evidence" }, classes[0].id, null, idb);
+  const assessmentTemplate = await saveAssessmentToMaterials(assessments[0].id, idb);
+  const lessonTemplate = await saveLessonToMaterials(lesson.id, idb);
+  const assessmentCopy = await materializeMaterialToClass(assessmentTemplate.id, classes[1].id, idb);
+  const lessonCopy = await materializeMaterialToClass(lessonTemplate.id, classes[1].id, idb);
+  assert.notEqual(assessmentCopy.item.id, assessments[0].id);
+  assert.notEqual(lessonCopy.item.id, lesson.id);
+  assert.equal((await listScores(assessmentCopy.item.id, idb)).length, 0);
+  assert.notEqual((await listQuestions(assessmentCopy.item.id, idb))[0].id, question.id);
+  assert.equal((await listStudents(classes[1].id, {}, idb)).length, 40);
+
+  const attendance = await listAttendanceRecords(classes[0].id, idb), scores = await listScoresForClass(classes[0].id, idb);
+  const progress = deriveStudentProgress({ student: primary[0], classId: classes[0].id, attendance, assessments: await listAssessments(classes[0].id, idb), scores });
+  assert.equal(progress.attendance.length, 2);
+  assert.equal(progress.attendance.find((entry) => entry.date === "2026-09-29").status, "present");
+  assert.equal(progress.assessments[0].rawScore, "0");
+  assert.equal(progress.assessments[0].entered, true);
+  const missing = deriveStudentProgress({ student: primary[2], classId: classes[0].id, attendance, assessments: await listAssessments(classes[0].id, idb), scores });
+  assert.equal(missing.assessments[0].entered, false);
+  const allStudents = [...(await listStudents(classes[0].id, {}, idb)), ...(await listStudents(classes[0].id, { archived: true }, idb))];
+  const report = deriveAssessmentResults({ classId: classes[0].id, students: allStudents, assessments: await listAssessments(classes[0].id, idb), scores }).reports[0];
+  assert.equal(report.statistics.recordedCount, 2);
+  assert.equal(report.statistics.missingCount, 38);
+  assert.equal(report.rows.find((row) => row.studentId === primary[39].id).archived, true);
+  assert.equal(deriveAttendanceSummary({ classId: classes[0].id, students: allStudents, attendance }).recordedCount, 80);
+  assert.equal((await listScoresForClass(classes[1].id, idb)).length, 40, "neighboring class scores stay out of the source-class Progress/Reports query");
+
+  const nextTerm = await saveClass({ className: "Subject 1 · Term 2" }, null, idb);
+  await setClassArchived(classes[0].id, true, idb);
+  const copiedRoster = await copyActiveRosterToEmptyClass(classes[0].id, nextTerm.id, idb);
+  assert.equal(copiedRoster.length, 39);
+  assert.equal((await listAttendanceRecords(classes[0].id, idb)).length, 80, "archiving and roster reuse preserve old-term history");
+});
+
+test("class workspace reads use existing IndexedDB indexes instead of scanning other classes", async () => {
+  const idb = new MemoryIndexedDb();
+  const classA = await saveClass({ className: "Class A" }, null, idb);
+  const classB = await saveClass({ className: "Class B" }, null, idb);
+  const rosterA = await saveStudents(Array.from({ length: 40 }, (_, index) => ({ fullName: `A Student ${index + 1}` })), classA.id, idb);
+  const rosterB = await saveStudents(Array.from({ length: 40 }, (_, index) => ({ fullName: `B Student ${index + 1}` })), classB.id, idb);
+  const assessmentA = await saveAssessment({ title: "Assessment A", date: "2026-09-29", maximumScore: "20" }, classA.id, null, idb);
+  const assessmentB = await saveAssessment({ title: "Assessment B", date: "2026-09-29", maximumScore: "20" }, classB.id, null, idb);
+  await saveScores(assessmentA.id, rosterA.map((student) => ({ studentId: student.id, rawScore: "0" })), idb);
+  await saveScores(assessmentB.id, rosterB.map((student) => ({ studentId: student.id, rawScore: "18" })), idb);
+  await saveAttendance(classA.id, "2026-09-29", rosterA.map((student) => ({ studentId: student.id, status: "present" })), idb);
+  await saveAttendance(classB.id, "2026-09-29", rosterB.map((student) => ({ studentId: student.id, status: "absent" })), idb);
+  const lessonA = await saveLesson({ title: "Class A lesson", learningGoal: "Practice" }, classA.id, null, idb);
+  await saveLesson({ title: "Class B lesson", learningGoal: "Review" }, classB.id, null, idb);
+  await saveAuthoredQuestion({ questionType: "multiple-choice", prompt: "Question A", points: "1", options: [{ text: "A1" }, { text: "A2" }] }, assessmentA.id, null, idb);
+  await saveAuthoredQuestion({ questionType: "multiple-choice", prompt: "Question B", points: "1", options: [{ text: "B1" }, { text: "B2" }] }, assessmentB.id, null, idb);
+
+  const stores = idb.db.stores;
+  for (const store of stores.values()) { store.getAllCalls = 0; store.indexReads = []; }
+  const [students, attendance, datedAttendance, history, assessments, lessons, scores, questions] = await Promise.all([
+    listStudents(classA.id, {}, idb),
+    listAttendanceRecords(classA.id, idb),
+    listAttendanceForDate(classA.id, "2026-09-29", idb),
+    listAttendanceHistory(classA.id, idb),
+    listAssessments(classA.id, idb),
+    listLessons(classA.id, idb),
+    listScoresForClass(classA.id, idb),
+    listQuestions(assessmentA.id, idb)
+  ]);
+
+  assert.equal(students.length, 40);
+  assert.equal(attendance.length, 40);
+  assert.equal(datedAttendance.length, 40);
+  assert.equal(history.length, 1);
+  assert.equal(assessments.length, 1);
+  assert.equal(assessments[0].scoreCount, 40);
+  assert.deepEqual(lessons.map((lesson) => lesson.id), [lessonA.id]);
+  assert.equal(scores.length, 40);
+  assert.ok(scores.every((score) => score.classId === classA.id));
+  assert.equal(questions.length, 1);
+  assert.equal(questions[0].options.length, 2);
+  for (const name of ["students", "attendance", "assessments", "scores", "lessons", "questions", "questionOptions"]) {
+    const store = stores.get(name);
+    assert.equal(store.getAllCalls, 0, `${name} should be read through its existing index for a class workspace`);
+    assert.ok(store.indexReads.length > 0, `${name} should use an IndexedDB index`);
+  }
+});
+
 test("attendance is normalized to IDs, defaults to present, and reopens one class/date session", async () => {
   const idb = new MemoryIndexedDb();
   const classroom = await saveClass({ className: "Attendance class" }, null, idb);
@@ -233,6 +472,27 @@ test("attendance is normalized to IDs, defaults to present, and reopens one clas
   const history = await listAttendanceHistory(classroom.id, idb);
   assert.equal(history.length, 1);
   assert.equal(history[0].date, "2026-09-28");
+});
+
+test("attendance saves and reopens a realistic 48-student roster without changing status semantics", async () => {
+  const idb = new MemoryIndexedDb();
+  const classroom = await saveClass({ className: "Large attendance class" }, null, idb);
+  const students = await saveStudents(Array.from({ length: 48 }, (_, index) => ({ fullName: `Student ${String(index + 1).padStart(2, "0")}` })), classroom.id, idb);
+  const initialRows = students.map((student) => ({ studentId: student.id, status: "present" }));
+  assert.equal(initialRows.length, 48);
+  assert.deepEqual(attendanceCounts(initialRows), { present: 48, absent: 0, late: 0, excused: 0 });
+
+  const changedRows = initialRows.map((row, index) => ({ ...row, status: index % 11 === 0 ? "absent" : index % 13 === 0 ? "late" : index % 17 === 0 ? "excused" : row.status }));
+  const saved = await saveAttendance(classroom.id, "2026-09-29", changedRows, idb);
+  const reopened = await listAttendanceForDate(classroom.id, "2026-09-29", idb);
+  assert.equal(saved.length, 48);
+  assert.deepEqual(attendanceCounts(reopened), attendanceCounts(changedRows));
+  const expectedByStudent = new Map(changedRows.map((row) => [row.studentId, row.status]));
+  reopened.forEach((row) => assert.equal(row.status, expectedByStudent.get(row.studentId)));
+  assert.equal(reopened.find((row) => row.studentId === students[0].id).status, "absent");
+  assert.equal(reopened.find((row) => row.studentId === students[1].id).status, "present");
+  assert.equal(reopened.some((row) => row.status === "late"), true);
+  assert.equal(reopened.some((row) => row.status === "excused"), true);
 });
 
 test("attendance validates dates, statuses, class boundaries, archives safely, and is removed with its class", async () => {
@@ -326,6 +586,36 @@ test("larger generic gradebook operations stay practical for 60 students and 40 
   const idb = new MemoryIndexedDb(); const classroom = await saveClass({ className: "Performance" }, null, idb); const students = await saveStudents(Array.from({ length: 60 }, (_, index) => ({ fullName: `Student ${String(index + 1).padStart(2, "0")}` })), classroom.id, idb); const started = performance.now();
   for (let index = 0; index < 40; index += 1) { const assessment = await saveAssessment({ title: `Quiz ${index + 1}`, date: `2026-09-${String((index % 28) + 1).padStart(2, "0")}`, maximumScore: "20" }, classroom.id, null, idb); await saveScores(assessment.id, students.map((student, studentIndex) => ({ studentId: student.id, rawScore: String(studentIndex % 21) })), idb); }
   const assessments = await listAssessments(classroom.id, idb); const scores = await listScores(assessments[0].id, idb); const elapsed = performance.now() - started; assert.equal(assessments.length, 40); assert.equal(scores.length, 60); assert.ok(elapsed < 1500, `synthetic gradebook operations took ${elapsed}ms`);
+});
+
+test("school-year attendance across eight 40-student classes remains class-scoped and index-driven", async () => {
+  const idb = new MemoryIndexedDb(), classes = [], rosters = [];
+  for (let classIndex = 0; classIndex < 8; classIndex += 1) {
+    const classroom = await saveClass({ className: `Section ${classIndex + 1}` }, null, idb);
+    const roster = await saveStudents(Array.from({ length: 40 }, (_, index) => ({ fullName: `Student ${String(index + 1).padStart(2, "0")}` })), classroom.id, idb);
+    classes.push(classroom); rosters.push(roster);
+  }
+  const started = performance.now();
+  for (let day = 0; day < 180; day += 1) {
+    const date = new Date(2025, 0, day + 1);
+    const dateText = String(date.getFullYear()) + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+    for (let classIndex = 0; classIndex < classes.length; classIndex += 1) {
+      await saveAttendance(classes[classIndex].id, dateText, rosters[classIndex].map((student, index) => ({ studentId: student.id, status: index % 17 === day % 17 ? "absent" : index % 19 === day % 19 ? "late" : "present" })), idb);
+    }
+  }
+  const dateText = "2025-06-29";
+  const classDay = await listAttendanceForDate(classes[0].id, dateText, idb);
+  const history = await listAttendanceRecords(classes[0].id, idb);
+  const unrelated = await listAttendanceForDate(classes[7].id, dateText, idb);
+  const store = idb.db.stores.get("attendance"), elapsed = performance.now() - started;
+  assert.equal(store.records.size, 8 * 180 * 40);
+  assert.equal(classDay.length, 40);
+  assert.equal(history.length, 180 * 40);
+  assert.equal(unrelated.length, 40);
+  assert.equal(store.getAllCalls, 0, "school-year reads should use classId/classDate indexes, not full-store getAll");
+  assert.ok(store.indexReads.some((read) => read.name === "classDate" && read.key === classes[0].id + "::" + dateText));
+  assert.ok(store.indexReads.some((read) => read.name === "classId" && read.key === classes[0].id));
+  assert.ok(elapsed < 20000, `school-year synthetic attendance path took ${elapsed}ms in the in-memory IndexedDB harness`);
 });
 
 test("Assessment Center keeps authored questions normalized, ready-safe, duplicable, and backup-safe", async () => {

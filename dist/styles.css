@@ -127,6 +127,12 @@ button, .button, .install-button, .text-button, .link-button { transition: backg
 .nav-label { margin: 1.15rem .65rem .35rem; color: #9fc6c6; font-size: .67rem; letter-spacing: .1em; }
 .nav-label { display: block; pointer-events: none; font-weight: 800; }
 .nav-hint { margin: 0 .68rem .55rem; color: #a8c8c6; font-size: .73rem; line-height: 1.35; }
+.nav-class-context { display: flex; align-items: center; justify-content: space-between; gap: .35rem; margin: .12rem .45rem .55rem; padding: .25rem .35rem .25rem .58rem; background: rgba(255,255,255,.055); border: 1px solid rgba(198,233,227,.13); border-radius: .6rem; }
+.nav-class-context[hidden] { display: none; }
+.nav-class-context-name { min-width: 0; overflow: hidden; color: #e0efed; font-size: .77rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.nav-switch-class { flex: 0 0 auto; min-height: 2.75rem; padding: .35rem .48rem; color: #bfe3dc; background: transparent; border: 1px solid transparent; border-radius: .45rem; font: inherit; font-size: .73rem; font-weight: 760; cursor: pointer; }
+.nav-switch-class:hover { color: #fff; background: rgba(255,255,255,.09); border-color: rgba(198,233,227,.18); }
+.nav-switch-class:focus-visible { color: #fff; outline: 2px solid #d8ef9a; outline-offset: 2px; }
 .nav-item { width: 100%; min-height: 2.75rem; grid-template-columns: 1.35rem minmax(0, 1fr); gap: .55rem; padding: .52rem .68rem; color: #d7e9e7; background: transparent; border: 1px solid transparent; border-radius: 10px; font-size: .88rem; font-weight: 620; text-align: left; }
 .nav-item--available { color: #d2e6e3; cursor: pointer; }
 .nav-item--available:disabled { color: #83a7a6; cursor: not-allowed; opacity: 1; }
@@ -446,6 +452,7 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
   .gradebook-screen .button, .classroom-grid .button {
     min-height: 44px;
   }
+  .backup-recency-actions .link-button { min-height: 44px; padding-inline: .4rem; }
 }
 
 .materials-heading { align-items: start; }
@@ -473,3 +480,35 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
   .workspace-tools-heading { align-items: flex-start; flex-direction: column; }
   .workspace-tools-heading > .button { width: 100%; min-height: 44px; }
 }
+
+.attendance-save--mobile { display: none; }
+@media (max-width: 700px) {
+  .attendance-save--top { display: none; }
+  .attendance-save--mobile {
+    position: sticky;
+    z-index: 5;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    justify-items: stretch;
+    gap: .75rem;
+    width: auto;
+    margin: 0;
+    padding: .65rem .75rem calc(.65rem + env(safe-area-inset-bottom, 0px));
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: .75rem;
+    box-shadow: 0 -5px 18px rgb(20 52 59 / 10%);
+  }
+  .attendance-save--mobile .save-state { min-width: 0; }
+  .attendance-save--mobile .button { width: auto; min-height: 2.75rem; white-space: nowrap; }
+  .attendance-list { margin-bottom: 5.25rem; }
+}
+
+.group-mode-select { display: grid; max-width: 22rem; gap: .3rem; margin-top: .85rem; color: #36545b; font-size: .8rem; font-weight: 750; }
+.group-mode-select select { width: 100%; min-height: 2.8rem; padding: .5rem .65rem; color: var(--ink); background: #fff; border: 1px solid #b8ccce; border-radius: .55rem; font: inherit; }
+.progress-history-action { justify-self: start; max-width: 100%; min-height: 2.75rem; white-space: normal; text-align: left; }
+@media print { .progress-history-action { display: none !important; } }
+.workspace-lock-dialog { max-width: min(34rem, calc(100vw - 2rem)); }
+.form-error { margin: 0 0 1rem; padding: .75rem 1rem; border: 1px solid #e4aaa3; border-left: 4px solid #a5332d; border-radius: .5rem; background: #fff5f3; color: #76231e; font-weight: 650; line-height: 1.45; }

@@ -12,7 +12,7 @@ test("first-use guidance explains the reusable local teacher workflow without sa
   assert.match(app, /function firstUseGuide\(\)/);
   assert.match(app, /Create a class/);
   assert.match(app, /Add students once/);
-  assert.match(app, /Attendance, Gradebook, Assessments, Lessons, Classroom Mode, Progress, or Reports/);
+  assert.match(app, /Attendance, Gradebook, Assessment Center, Lessons, Classroom Mode, Student Progress, or Reports/);
   assert.doesNotMatch(app, /Sample class|Demo class|Sample student|Demo student/);
   assert.doesNotMatch(app, /Your workspace is ready/);
 });
@@ -29,6 +29,25 @@ test("workspace context, dialog return focus, and small-screen dialog scrolling 
   assert.match(css, /@media \(max-width: 700px\) \{ \.status-button, \.attendance-date input, \.score-input/);
 });
 
+test("Escape closes ordinary dialogs through focus restoration but cannot dismiss the workspace lock", () => {
+  const cancelHandling = app.match(/Object\.entries\(dialogs\)\.forEach\(\(\[name, dialog\]\) => dialog\.addEventListener\("cancel", \(event\) => \{[\s\S]*?\}\)\);/)?.[0] || "";
+  assert.ok(cancelHandling);
+  assert.match(cancelHandling, /event\.preventDefault\(\)/);
+  assert.match(cancelHandling, /name === "workspace-lock"[\s\S]*?\[data-workspace-retry\][\s\S]*?focus\(\)/);
+  assert.match(cancelHandling, /hide\(name\)/);
+  assert.match(app, /function hide\(name\)[\s\S]*?requestAnimationFrame\(\(\) => \{ if \(returnFocus\?\.isConnected\) returnFocus\.focus\(\); \}\)/);
+  assert.match(app, /document\.addEventListener\("keydown", \(event\) => \{ if \(event\.key !== "Escape"\) return; if \(dialogs\["workspace-lock"\]\.open\) \{ event\.preventDefault\(\); event\.stopPropagation\(\); dialogs\["workspace-lock"\]\.querySelector\("\[data-workspace-retry\]"\)\?\.focus\(\); return; \}/);
+});
+
+test("Overview, Student Progress, and Reports request records only for the open class", () => {
+  assert.match(app, /async function refreshActiveClass\(\) \{ if \(!state\.activeClass\) return; const found = await getRecord\("classes", state\.activeClass\.id\)/);
+  assert.match(app, /listAttendanceHistory\(found\.id\), listAssessments\(found\.id\), listLessons\(found\.id\), listScoresForClass\(found\.id\)/);
+  assert.match(app, /deriveStudentProgress\(\{ student, classId, attendance: records\[0\], assessments: state\.assessments, scores: records\[1\] \}\)/);
+  assert.match(app, /listAttendanceRecords\(classId\), listScoresForClass\(classId\)/);
+  assert.match(app, /listAttendanceRecords\(state\.activeClass\.id\), listScoresForClass\(state\.activeClass\.id\)/);
+  assert.doesNotMatch(app, /getAllRecords\("(?:students|attendance|assessments|scores|questions|questionOptions|lessons)"/);
+});
+
 test("Progress and Lesson search refresh results in place so typing keeps input focus and caret", () => {
   assert.match(app, /function renderProgressStudentResults\(\)[\s\S]*?host\.replaceChildren\(\.\.\.progressStudentResults\(\)\)/);
   assert.match(app, /state\.progressSearch = event\.currentTarget\.value; renderProgressStudentResults\(\);/);
@@ -40,6 +59,12 @@ test("Progress and Lesson search refresh results in place so typing keeps input 
   assert.match(app, /"data-lesson-results"/);
 });
 
+test("opening a copied class lesson restores its active class workspace navigation", () => {
+  const lessonEditor = app.match(/function renderLessonEditor\(\)[\s\S]*?(?=function lessonPrintSection\()/)?.[0] || "";
+  assert.match(lessonEditor, /if \(!current \|\| !session\) \{ renderLessonWorkspace\(\); return; \} setWorkspaceLocation\("Lesson Workspace"\);/);
+  assert.match(app, /async function openCopiedContent\(\)[\s\S]*?state\.activeClass = success\.target;[\s\S]*?showLessonEditor\(success\.item\)/);
+});
+
 test("Student Progress explains an empty active roster and links directly to class Overview", () => {
   assert.match(app, /function progressStudentResults\(\)/);
   assert.match(app, /if \(!state\.students\.length\)[\s\S]*?No active students yet/);
@@ -47,8 +72,34 @@ test("Student Progress explains an empty active roster and links directly to cla
   assert.match(app, /action\("Open class Overview", renderClass, "button button--quiet"\)/);
 });
 
+test("active Student Progress history routes to exact Attendance and score records without editing them", () => {
+  const attendanceRoute = app.match(/async function openProgressAttendance\(entry\)[\s\S]*?(?=async function openProgressScore\(entry\))/)?.[0] || "";
+  const scoreRoute = app.match(/async function openProgressScore\(entry\)[\s\S]*?(?=function progressStudentList\()/)?.[0] || "";
+  const progressDetail = app.match(/function renderStudentProgress\(\)[\s\S]*?(?=function renderProgressPrint\()/)?.[0] || "";
+  assert.match(progressDetail, /canEditHistory = !progress\.student\.archivedAt && !state\.activeClass\?\.archivedAt && progress\.classId === state\.activeClass\?\.id/);
+  assert.match(progressDetail, /action\("Review date", \(\) => openProgressAttendance\(entry\)/);
+  assert.match(progressDetail, /action\("Open score entry", \(\) => openProgressScore\(entry\)/);
+  assert.match(attendanceRoute, /listAttendanceForDate\(context\.classId, entry\.date\)/);
+  assert.match(attendanceRoute, /openAttendance\(entry\.date, \{ focusStudentId: student\.id, progressReturn: \{ classId: context\.classId, student \}, requireRecordedStudent: true \}\)/);
+  assert.match(attendanceRoute, /That attendance record is no longer available/);
+  assert.match(attendanceRoute, /state\.activeClass\?\.id !== context\.classId/);
+  assert.match(scoreRoute, /listAssessments\(context\.classId\)/);
+  assert.match(scoreRoute, /item\.id === entry\.assessmentId && item\.classId === context\.classId/);
+  assert.match(scoreRoute, /openAssessment\(currentAssessment, \{ focusStudentId: student\.id, progressReturn:/);
+  assert.match(scoreRoute, /This assessment is no longer available/);
+  assert.match(app, /function focusAttendanceStudent\(studentId\).*row\.scrollIntoView\?\.\(\{ block: "center" \}\); row\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /function focusProgressScoreInput\(studentId\).*input\.scrollIntoView\?\.\(\{ block: "center" \}\); input\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /action\(session\.progressReturn \? "← Student Progress" : "← Gradebook", \(\) => requestScoreExit\(/);
+  assert.match(app, /function requestAttendanceExit\(next\) \{ if \(state\.attendance\?\.dirty\)/);
+  assert.match(app, /function requestScoreExit\(next\) \{ if \(state\.scoreSession\?\.dirty\)/);
+  assert.doesNotMatch(attendanceRoute + scoreRoute, /saveAttendance\(|saveScores\(/);
+  assert.match(css, /\.progress-history-action \{[^}]*min-height: 2\.75rem;/);
+  assert.match(css, /@media print \{ \.progress-history-action \{ display: none !important; \} \}/);
+});
+
 test("mobile breadcrumb and identified module actions have practical 44px touch targets", () => {
   assert.match(css, /@media \(max-width: 700px\) \{\s*\.crumb-nav \.button, \.crumb-nav \.link-button,[\s\S]*?min-height: 44px;/);
+  assert.match(css, /\.backup-recency-actions \.link-button \{ min-height: 44px;/);
 });
 
 test("class workspaces keep the roster first and make the current tool visible in navigation", () => {
@@ -85,6 +136,62 @@ test("Class Overview derives compact Today actions from existing class records o
   assert.match(css, /\.today-grid \{ display: grid;/);
 });
 
+test("Classroom Mode exposes balanced group-count and maximum-size workflows in the existing session", () => {
+  assert.match(app, /groupMode: "count", message: "", timer: createTimer\(\)/);
+  assert.match(app, /function freshClassroomSession\(classId\).*groupSize: "", groupMode: "count"/);
+  assert.match(app, /Grouping method/);
+  assert.match(app, /Number of groups/);
+  assert.match(app, /Students per group/);
+  assert.match(app, /Maximum students per group/);
+  assert.match(app, /generateBalancedGroupsBySize\(classroomRoster\(\), session\.groupSize, secureUnit\)/);
+  assert.match(app, /Choose a whole-number maximum from 1 to \$\{roster\.length\}/);
+  assert.match(app, /function classroomRoster\(\) \{ return state\.students\.filter\(\(student\) => !student\.archivedAt\); \}/);
+  assert.match(app, /function copyClassroomGroups\(\).*groupsPlainText\(session\.groups, classroomRoster\(\)\)/);
+  assert.match(app, /function renderClassroomDisplay\(\).*session\.groups \? classroomGroupCards\(session\.groups, roster\)/);
+  assert.match(css, /\.group-mode-select select \{[^}]*min-height: 2\.8rem;/);
+  assert.match(css, /@media \(max-width: 700px\) \{ \.classroom-hero, \.classroom-tool-heading, \.group-input-row \{[^}]*flex-direction: column;/);
+});
+
+test("empty-roster Today cards direct teachers to add students, then retain the normal actions", () => {
+  const attendance = app.match(/function todayAttendanceCard\(current\)[\s\S]*?(?=function todayScoresCard\(current\))/)?.[0] || "";
+  const scores = app.match(/function todayScoresCard\(current\)[\s\S]*?(?=function todayLessonCard\(current\))/)?.[0] || "";
+  assert.match(app, /function todayAddStudentsAction\(\) \{ return action\("Add students", \(\) => \{ const heading = root\.querySelector\("#roster-heading"\); heading\?\.scrollIntoView\(\{ block: "center" \}\); heading\?\.focus\(\{ preventScroll: true \}\); \}, "button"\); \}/);
+  assert.doesNotMatch(app.match(/function todayAddStudentsAction\(\)[^\n]*/)?.[0] || "", /prepStudent\(/);
+  assert.match(attendance, /if \(!state\.students\.length\) return todayCard\("Attendance", "Add students before taking attendance\.", todayAddStudentsAction\(\)\)/);
+  assert.match(attendance, /saved \? "Reopen today" : "Take attendance"/);
+  assert.match(scores, /if \(!activeCount\) return todayCard\("Scores", "Add students before entering scores\.", todayAddStudentsAction\(\)\)/);
+  assert.ok(scores.indexOf("if (!activeCount)") < scores.indexOf("if (!state.assessments.length)"), "roster setup must precede assessment creation guidance");
+  assert.match(scores, /action\("Continue scores"/);
+});
+
+test("first-time empty states explain Assessment Center and My Materials without changing their workflows", () => {
+  assert.match(app, /Create an assessment here or in Gradebook\. Add questions if you want printable student copies or an answer key for that same assessment\./);
+  assert.match(app, /action\("Create assessment", \(\) => prepAssessment\(null, true\), "button"\)/);
+  assert.match(app, /Choose Save to My Materials on a lesson or assessment in its class workspace\. You can add an independent Draft to another class later\./);
+  assert.doesNotMatch(app, /Save a persisted Lesson or authored Assessment from its class list/);
+});
+
+test("an empty class can copy active names from another class without bringing its history", () => {
+  const rosterCopy = storage.match(/export async function copyActiveRosterToEmptyClass\([\s\S]*?(?=export async function setStudentArchived)/)?.[0] || "";
+  const rosterUi = app.match(/function renderRosterCopyReview\([\s\S]*?(?=function copyKindLabel\()/)?.[0] || "";
+  const rosterSubmit = app.match(/async function confirmRosterCopy\([\s\S]*?(?=function copyKindLabel\()/)?.[0] || "";
+  assert.match(app, /const canCopyRoster = !current\.archivedAt && !state\.students\.length && !state\.archivedStudents\.length/);
+  assert.match(app, /action\("Copy roster from another class", prepRosterCopy/);
+  assert.match(app, /async function prepRosterCopy\(\)[\s\S]*?\[\.\.\.activeClasses, \.\.\.archivedClasses\]\.filter\(\(item\) => item\.id !== target\.id && item\.studentCount > 0\)/);
+  assert.match(app, /item\.archivedAt \? `\$\{item\.className\} · Archived source` : item\.className/);
+  assert.match(rosterUi, /Source · \$\{copy\.sourceClassName\}\$\{copy\.sourceArchived \? " \(archived, read-only\)" : ""\} → Destination · \$\{copy\.targetClassName\}/);
+  assert.match(rosterUi, /new independent records/);
+  assert.match(rosterSubmit, /copy\.submitting \|\| !form\.elements\.confirmCopy\.checked/);
+  assert.match(rosterSubmit, /copyActiveRosterToEmptyClass\(sourceId, copy\.targetClassId\)/);
+  assert.match(rosterCopy, /db\.transaction\(\["classes", "students"\], "readwrite"\)/);
+  assert.match(rosterCopy, /students\.index\("classId"\)\.getAll\(classId\)/);
+  assert.match(rosterCopy, /if \(targetStudents\.length\)/);
+  assert.match(rosterCopy, /sourceStudents\.filter\(\(student\) => !student\.archivedAt\)/);
+  assert.match(rosterCopy, /prepareStudent\(\{ fullName: student\.fullName \}, targetId\)/);
+  assert.doesNotMatch(rosterCopy, /saveAttendance\(|saveScores\(|classroomState|assessments|progress|reports/);
+  assert.match(html, /data-dialog="copy-roster"[\s\S]*?Archived classes can be read-only sources[\s\S]*?I reviewed the source and destination[\s\S]*?Copy roster/);
+});
+
 test("class-scoped navigation resolves an active class instead of disabling teacher tools", () => {
   assert.match(html, /<p class="nav-label" id="class-tools-label">Inside a class<\/p>/);
   assert.match(html, /Choose a class to open a tool\./);
@@ -93,7 +200,7 @@ test("class-scoped navigation resolves an active class instead of disabling teac
   assert.match(app, /classIsOpen = Boolean\(state\.activeClass\)/);
   assert.match(app, /if \(item instanceof HTMLButtonElement\) item\.disabled = false/);
   assert.match(app, /function requestClassTool\(label\)/);
-  assert.match(app, /resolveClassToolDestination\(await listClasses\(\)\)/);
+  assert.match(app, /state\.classes = await listClasses\(\);\s*const destination = resolveClassToolDestination\(state\.classes\)/);
   assert.match(app, /if \(label !== "My Materials" && !state\.activeClass\) \{ requestClassTool\(label\); closeMenu\(\); return; \}/);
   assert.match(app, /prepClass\(null, session\.label\)/);
   assert.match(app, /form\.dataset\.openTool = openTool/);
@@ -105,6 +212,26 @@ test("class-scoped navigation resolves an active class instead of disabling teac
   assert.match(app, /data-class-tool": "Reports"/);
   assert.doesNotMatch(css, /content: "Go"/);
   assert.match(css, /grid-template-columns: 1\.35rem minmax\(0, 1fr\);/);
+});
+
+test("open-class switcher keeps the current module and restricts destinations to active classes", () => {
+  assert.match(app, /const switchClassButton = action\("Switch class", requestClassSwitch, "nav-switch-class"\)/);
+  assert.match(app, /const hasOtherActiveClass = classIsOpen && !state\.activeClass\.archivedAt && state\.classes\.some\(\(item\) => !item\.archivedAt && item\.id !== state\.activeClass\.id\)/);
+  assert.match(app, /const classes = state\.classes\.filter\(\(item\) => item\.id !== current\.id\)/);
+  assert.match(app, /const label = document\.querySelector\("\[data-nav-item\]\[data-current\]"\)\?\.dataset\.navItem \|\| "Overview"/);
+  assert.match(app, /Choose an active class\. MATEVOK will keep you in \$\{session\.label\}; each class's records stay separate\./);
+  assert.match(app, /if \(session\.kind === "switch"\) \{ switchClassAfterGuards\(item, session\.label\); return; \}/);
+  assert.match(app, /const selected = await getRecord\("classes", classItem\.id\);[\s\S]*?if \(!selected \|\| selected\.archivedAt\) throw new Error\("That class is no longer available/);
+  assert.match(css, /\.nav-switch-class \{[^}]*min-height: 2\.75rem;/);
+  assert.match(css, /\.nav-switch-class:focus-visible/);
+});
+
+test("class switching passes through every existing unsaved-work guard", () => {
+  assert.match(app, /function switchClassAfterGuards\(classItem, label\) \{[\s\S]*?if \(state\.attendance\) requestAttendanceExit\(\{ type: "action", run: next \}\);\s*else if \(state\.scoreSession\) requestScoreExit\(next\);\s*else if \(state\.lesson\) requestLessonExit\(next\);\s*else next\(\);/);
+  assert.match(app, /if \(state\.attendance\?\.dirty\) \{ state\.pendingAttendanceExit = next; show\("leave-attendance"\); return; \}/);
+  assert.match(app, /if \(state\.scoreSession\?\.dirty\) \{ state\.pendingScoreExit = next; show\("leave-scores"\); return; \}/);
+  assert.match(app, /function requestLessonExit\(next = renderClass\) \{ if \(state\.lesson\?\.dirty && !window\.confirm\("Leave this lesson without saving your changes\?"\)\) return/);
+  assert.match(app, /async \(event\) => \{ event\.preventDefault\(\); const form = event\.currentTarget, openTool = form\.dataset\.openTool \|\| ""; try \{ const saved = await saveClass\([\s\S]*?Promise\.all\(\[refreshClasses\(\), refreshActiveClass\(\)\]\)/);
 });
 
 test("class navigation is grouped in the teacher workflow order while tools remain available to choose a class", () => {
@@ -170,16 +297,59 @@ test("Student Progress only calls attendance missing when no statuses were recor
 
 test("attendance date changes replace stale controls with a guarded loading state", () => {
   assert.match(app, /const request = \{\};/);
-  assert.match(app, /state\.attendance = \{ date, loading: true, request \};/);
+  assert.match(app, /state\.attendance = \{ date, loading: true, request, focusStudentId: options\.focusStudentId/);
   assert.match(app, /if \(state\.attendance\?\.request !== request\) return;/);
   assert.match(app, /if \(!session \|\| session\.loading\) return;/);
   assert.match(app, /Opening attendance for \$\{session\.date\}…/);
   assert.match(app, /attendance-screen--loading/);
 });
 
+test("attendance status edits patch existing controls and preserve explicit-save focus", () => {
+  const updater = app.match(/function updateAttendanceControls\(\)[\s\S]*?\n\}/)?.[0] || "";
+  const setter = app.match(/function setAttendanceStatus\(studentId, status\)[^\n]*/)?.[0] || "";
+  const markAll = app.match(/function markAllPresent\(\)[^\n]*/)?.[0] || "";
+  assert.match(updater, /root\.querySelectorAll\("\[data-attendance-row\]"\)/);
+  assert.match(updater, /button\.setAttribute\("aria-checked", String\(selected\)\)/);
+  assert.match(updater, /button\.tabIndex = selected \? 0 : -1/);
+  assert.match(updater, /data-attendance-count/);
+  assert.match(updater, /data-attendance-save-state/);
+  assert.match(setter, /session\.dirty = !session\.saved \|\| !attendanceRowsMatch/);
+  assert.match(setter, /updateAttendanceControls\(\)/);
+  assert.match(setter, /if \(session\.filter !== "all" && row\.status !== session\.filter\)/);
+  assert.match(setter, /root\.querySelector\(`\[data-attendance-count="\$\{filter\}"\]`\)\?\.focus\(\)/);
+  assert.doesNotMatch(setter.split("if (session.filter")[0], /renderAttendance\(\)|replaceChildren/);
+  assert.match(markAll, /updateAttendanceControls\(\)/);
+  assert.match(markAll, /if \(session\.filter !== "all"\)/);
+  assert.match(markAll, /root\.querySelector\(`\[data-attendance-count="\$\{filter\}"\]`\)\?\.focus\(\)/);
+  assert.match(app, /role: "radiogroup", "aria-label": `Attendance status for \$\{row\.fullName\}`/);
+  assert.match(app, /button\.setAttribute\("role", "radio"\); button\.setAttribute\("aria-checked", String\(selected\)\); button\.tabIndex = selected \? 0 : -1/);
+  assert.match(app, /function handleAttendanceStatusKey\(event\)[\s\S]*?nextAttendanceStatus\(button\.getAttribute\("data-attendance-status"\), event\.key, ATTENDANCE_STATUSES\)[\s\S]*?event\.preventDefault\(\); setAttendanceStatus\([\s\S]*?\)\?\.focus\(\)/);
+  assert.match(app, /root\.addEventListener\("keydown", handleAttendanceStatusKey\)/);
+  assert.doesNotMatch(app.match(/function handleAttendanceStatusKey\(event\)[\s\S]*?(?=function markAllPresent)/)?.[0] || "", /persistAttendance\(/);
+  assert.match(app, /data-attendance-status", status/);
+  assert.match(app, /action\("Save attendance", persistAttendance, "button"\)/);
+  assert.match(app, /function persistAttendance\(\)[\s\S]*?saveAttendance\(activeClass\.id, session\.date, session\.rows\)/);
+  assert.match(app, /function requestAttendanceExit\(next\) \{ if \(state\.attendance\?\.dirty\)/);
+});
+
+test("mobile attendance Save stays reachable without obscuring the final roster rows", () => {
+  assert.match(app, /saveActions\("mobile"\)/);
+  assert.match(css, /\.attendance-save--mobile \{ display: none; \}/);
+  assert.match(css, /@media \(max-width: 700px\) \{[\s\S]*?\.attendance-save--top \{ display: none; \}/);
+  assert.match(css, /\.attendance-save--mobile \{[\s\S]*?position: sticky;[\s\S]*?bottom: 0;/);
+  assert.match(css, /\.attendance-save--mobile \.button \{ width: auto; min-height: 2\.75rem;/);
+  assert.match(css, /\.status-button, \.attendance-date input,[^\n]*\{ min-height: 2\.75rem; \}/);
+  assert.match(css, /\.attendance-list \{ margin-bottom: 5\.25rem; \}/);
+  assert.match(css, /padding: \.65rem \.75rem calc\(\.65rem \+ env\(safe-area-inset-bottom, 0px\)\)/);
+});
+
 test("backup recency and the shared Gradebook assessment handoff remain visible without changing records", () => {
   assert.match(app, /function backupReminder\(\)/);
   assert.match(app, /noteBackupExport\(\)/);
+  const reminder = app.match(/function backupReminder\(\)[^\n]*/)?.[0] || "";
+  assert.match(reminder, /action\("Dismiss"[\s\S]*?refreshBackupReminder\(\)/);
+  assert.doesNotMatch(reminder, /renderDashboard\(\)/);
+  assert.match(app, /function refreshBackupReminder\(\) \{ if \(state\.activeClass\) renderClass\(\); else renderDashboard\(\); \}/);
   assert.match(app, /function refreshBackupReminder\(\)/);
   assert.match(app, /noteBackupExport\(\); refreshBackupReminder\(\);/);
   assert.match(app, /recordBackupDownloadStarted\(backupStatus\(\)\)/);
@@ -226,7 +396,7 @@ test("My Classes keeps its home composition compact and makes existing class inf
 
 test("strict same-origin CSP does not block startup recovery or the cached shell", () => {
   assert.match(headers, /script-src 'self'/);
-  assert.match(html, /<script src="startup\.js\?v=16"><\/script>/);
+  assert.match(html, /<script src="startup\.js\?v=22"><\/script>/);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/);
   assert.doesNotMatch(app, /serviceWorker\.register/);
 });
@@ -258,4 +428,11 @@ test("My Materials is a permanent library separate from active class workspaces"
   assert.match(css, /\.material-card-actions \.button \{ width: 100%; min-height: 44px;/);
   assert.match(storage, /BACKUP_STORES = Object\.freeze\(\[[^\]]*"materials"\]\)/);
   assert.match(storage, /"materials", indexes: \[\["kind", "kind"\], \["title", "title"\]\]/);
+});
+
+test("opening My Materials from an active class keeps that class as the default destination", () => {
+  assert.match(app, /state\.materialTargetClassId = state\.activeClass && !state\.activeClass\.archivedAt \? state\.activeClass\.id : "";\s*requestWorkspaceNavigation\("My Materials"\)/);
+  assert.match(app, /if \(targets\.some\(\(entry\) => entry\.id === state\.materialTargetClassId\)\) select\.value = state\.materialTargetClassId/);
+  assert.match(app, /Destination · \$\{target\.className\}/);
+  assert.match(app, /if \(label === "My Materials"\) \{ state\.activeClass = null/);
 });

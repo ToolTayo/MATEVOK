@@ -9,8 +9,9 @@ The product principle is **enter once, use everywhere**: a class and roster are 
 - A responsive, keyboard-accessible teacher workspace with polished first-use, empty, archived, and recovery states.
 - Create, open, edit, archive, restore, and deliberately permanently delete classes.
 - A class-scoped Today Overview with factual attendance status, incomplete score-entry progress, the most recently updated lesson, a Classroom Mode launch, and quiet backup-recency status. These summaries are derived from current records.
-- Class navigation grouped as Daily (Overview, Attendance, Gradebook), Prepare & Teach (Assessment Center, Lesson Workspace, Classroom Mode), and Review (Student Progress, Reports). With no class open, a tool opens directly when there is one active class, asks the teacher to choose when there are multiple, or offers class creation when there are none. Archived classes are excluded from class choices.
+- Class navigation grouped as Daily (Overview, Attendance, Gradebook), Prepare & Teach (Assessment Center, Lesson Workspace, Classroom Mode), and Review (Student Progress, Reports). With no class open, a tool opens directly when there is one active class, asks the teacher to choose when there are multiple, or offers class creation when there are none. Archived classes are excluded as destinations; an archived class may be chosen only as a read-only source when copying an active roster into an empty class.
 - Add a student individually or paste a roster with one name per line. Whitespace and blank lines are normalized, possible duplicate names are visibly reviewed, and same-name students can still be intentionally added.
+- For a new empty class with the same cohort, copy active student names from another active or archived class as fresh independent records. An archived class is a read-only source; archived students, attendance, scores, and class history are not copied, and later roster edits do not sync between classes.
 - Archive and restore individual student records.
 - Take daily attendance from a class using stable `classId`, `studentId`, and local calendar date values only. Start with **Mark all present**, then mark absent, late, or excused exceptions; reopen a saved date to correct it.
 - Review actual status counts, filter by a status, and reopen focused class attendance history. Archived students are omitted from new dates but keep their historical attendance.
@@ -36,7 +37,7 @@ The product principle is **enter once, use everywhere**: a class and roster are 
 - See a subtle device-local reminder of when a backup download was started, or that no download has been recorded on this device. The browser cannot confirm that the downloaded file was ultimately saved; classroom changes can prompt a dismissible reminder. This metadata contains no class/student information and is not part of the backup.
 - A polished mobile navigation pattern, touch-friendly controls, visible focus styles, a skip link, and reduced-motion support.
 - A dependency-free, installable PWA foundation with an offline application shell.
-- A browser-local IndexedDB storage boundary, migrated additively to schema version 7; version 7 adds a separate indexed `materials` store without changing existing class records.
+- A browser-local IndexedDB storage boundary, migrated additively to schema version 8; version 7 introduced the separate indexed `materials` store, and version 8 advances the metadata version to prevent older open tabs from writing after the single-editor protection is available. Existing records and backup shape are unchanged.
 - A minimal static security policy that permits no third-party scripts, images, or network connections.
 
 No real classes, students, grades, attendance, or sample student data are bundled with the application.
@@ -56,6 +57,7 @@ dist/
   backup-crypto.js      Passphrase-derived AES-GCM encryption for exported backups
   classroom.js          Pure picker, balanced grouping, and deadline-timer logic
   storage.js            IndexedDB schema, migrations, normalized local records, backups
+  attendance-keyboard.js  Arrow-key status cycling for accessible long-roster attendance entry
   gradebook.js          Explicit generic calculation layer; no official policy constants
   progress.js           Pure individual factual-history derivation
   reports.js            Pure class-scoped report and safe CSV derivations
@@ -71,7 +73,7 @@ tests/
 
 ### Shared data model
 
-`storage.js` uses versioned local stores for workspace data, classes, students, attendance, assessments, scores, questions, question options, lessons, and My Materials templates. Today, Student Progress, and Reports are derived views, not persisted report/progress records. My Materials stores only teacher-authored Lesson or Assessment template content, never class rosters, attendance, scores, or history. A class copy receives fresh class-owned IDs and is an independent Draft snapshot. My Classes uses `classes` and `students`; Attendance uses normalized records with `classId`, `studentId`, `date` (`YYYY-MM-DD` in the device’s local time), and one stable status: `present`, `absent`, `late`, or `excused`. Attendance never stores a copied student name, and a deterministic record ID keeps each student to one status per class/date.
+`storage.js` uses versioned local stores for workspace data, classes, students, attendance, assessments, scores, questions, question options, lessons, and My Materials templates. Today, Student Progress, and Reports are derived views, not persisted report/progress records. My Materials stores only teacher-authored Lesson or Assessment template content, never class rosters, attendance, scores, or history. A class copy receives fresh class-owned IDs and is an independent Draft snapshot. Student records belong to one class; when a teacher copies a roster into an empty class, MATEVOK creates fresh student IDs from active student names in an active or archived source. The archived source is read-only, and the destination records carry no attendance, scores, or history. My Classes uses `classes` and `students`; Attendance uses normalized records with `classId`, `studentId`, `date` (`YYYY-MM-DD` in the device’s local time), and one stable status: `present`, `absent`, `late`, or `excused`. Attendance never stores a copied student name, and a deterministic record ID keeps each student to one status per class/date.
 
 The gradebook uses `assessments` (`id`, `classId`, title, date, maximum score, optional category/period, authoring status, print metadata, and `policyId`) and `scores` (`assessmentId`, `classId`, `studentId`, and canonical raw-score decimal text). A score identifier is deterministic for the assessment/student pair. A missing score has no score record; a zero score is the explicit raw value `"0"`. Student names are never copied into assessment or score records.
 

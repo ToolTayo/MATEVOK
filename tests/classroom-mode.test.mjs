@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addTimerMinute, createPickerState, createTimer, eligibleStudents, formatTimer, generateBalancedGroups, groupsPlainText, pauseTimer, pickStudent, resetPickerRound, resetTimer, shuffled, startTimer, timerSnapshot } from "../dist/classroom.js";
+import { addTimerMinute, createPickerState, createTimer, eligibleStudents, formatTimer, generateBalancedGroups, generateBalancedGroupsBySize, groupsPlainText, pauseTimer, pickStudent, resetPickerRound, resetTimer, shuffled, startTimer, timerSnapshot } from "../dist/classroom.js";
 
 const roster = (count, archived = []) => Array.from({ length: count }, (_, index) => ({ id: `student-${index + 1}`, fullName: index === 0 ? "<script>alert(1)</script> & \"Student\"" : `Student ${index + 1}`, archivedAt: archived.includes(index + 1) ? "2026-09-28T00:00:00.000Z" : null }));
 const sequenceRng = (...values) => { let index = 0; return () => values[index++ % values.length]; };
@@ -21,6 +21,41 @@ test("balanced groups are deterministic with injected RNG, complete, unique, and
   const students = roster(5, [5]); const groups = generateBalancedGroups(students, 2, sequenceRng(.1, .8, .2, .7)); const ids = groups.flat(); assert.equal(new Set(ids).size, 4); assert.deepEqual(new Set(ids), new Set(["student-1", "student-2", "student-3", "student-4"])); assert.deepEqual(groups.map((group) => group.length).sort(), [2, 2]);
   const uneven = generateBalancedGroups(roster(41), 6, () => 0); assert.deepEqual(uneven.map((group) => group.length).sort((a, b) => a - b), [6, 7, 7, 7, 7, 7]); assert.equal(generateBalancedGroups(roster(42), 7, () => 0).every((group) => group.length === 6), true);
   assert.throws(() => generateBalancedGroups(roster(3), 5), /no more groups/); assert.throws(() => generateBalancedGroups(roster(3), 0), /at least one/); assert.throws(() => generateBalancedGroups([], 1), /active student/); assert.match(groupsPlainText(groups, students), /Group 1/); assert.match(groupsPlainText(groups, students), /<script>alert\(1\)<\/script>/);
+});
+
+test("students-per-group mode balances awkward rosters without exceeding the requested maximum", () => {
+  const students = roster(39, [39]);
+  const groups38 = generateBalancedGroupsBySize(students, 4, () => 0);
+  const sizes38 = groups38.map((group) => group.length).sort((a, b) => a - b);
+  const ids38 = groups38.flat();
+  assert.equal(groups38.length, 10);
+  assert.deepEqual(sizes38, [3, 3, 4, 4, 4, 4, 4, 4, 4, 4]);
+  assert.equal(sizes38.at(-1) - sizes38[0] <= 1, true);
+  assert.equal(new Set(ids38).size, 38);
+  assert.deepEqual(new Set(ids38), new Set(students.slice(0, 38).map((student) => student.id)));
+  assert.equal(groups38.every((group) => group.length > 0 && group.length <= 4), true);
+  assert.deepEqual(generateBalancedGroupsBySize(students, "4", () => 0), groups38, "injected RNG preserves deterministic shuffle behavior");
+
+  const groups5 = generateBalancedGroupsBySize(roster(5), 2, () => 0);
+  assert.deepEqual(groups5.map((group) => group.length).sort(), [1, 2, 2]);
+  assert.equal(new Set(groups5.flat()).size, 5);
+  assert.deepEqual(generateBalancedGroupsBySize(roster(1), 1, () => 0), [["student-1"]]);
+  assert.deepEqual(generateBalancedGroupsBySize(roster(2), 2, () => 0).map((group) => group.length), [2]);
+});
+
+test("students-per-group mode rejects invalid sizes and excludes archived students", () => {
+  const active = roster(5, [2]);
+  assert.throws(() => generateBalancedGroupsBySize(active, 0), /whole-number maximum group size/);
+  assert.throws(() => generateBalancedGroupsBySize(active, -1), /whole-number maximum group size/);
+  assert.throws(() => generateBalancedGroupsBySize(active, 2.5), /whole-number maximum group size/);
+  assert.throws(() => generateBalancedGroupsBySize(active, "2.5"), /whole-number maximum group size/);
+  assert.throws(() => generateBalancedGroupsBySize(active, 5), /cannot exceed the 4 active students/);
+  assert.throws(() => generateBalancedGroupsBySize([], 1), /active student/);
+  const groups = generateBalancedGroupsBySize(active, 2, () => 0);
+  const ids = groups.flat();
+  assert.equal(new Set(ids).size, 4);
+  assert.equal(ids.includes("student-2"), false);
+  assert.equal(groups.every((group) => group.length <= 2), true);
 });
 
 test("shuffle is deterministic with an injected RNG and rejects an invalid random source", () => {
