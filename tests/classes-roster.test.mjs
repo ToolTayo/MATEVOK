@@ -69,7 +69,7 @@ import {
 } from "../dist/storage.js";
 
 class MemoryStore {
-  constructor(name) { this.name = name; this.records = new Map(); this.indexes = []; this.getAllCalls = 0; this.indexReads = []; this.indexNames = { contains: (value) => this.indexes.some((index) => index.name === value) }; }
+  constructor(name) { this.name = name; this.records = new Map(); this.indexes = []; this.getAllCalls = 0; this.clearCalls = 0; this.indexReads = []; this.indexNames = { contains: (value) => this.indexes.some((index) => index.name === value) }; }
   createIndex(name, keyPath, options) { this.indexes.push({ name, keyPath, options }); }
   put(value) { this.records.set(value.id ?? value.key, structuredClone(value)); }
   get(key) { return request(this.records.get(key)); }
@@ -77,6 +77,7 @@ class MemoryStore {
   index(name) { const definition = this.indexes.find((item) => item.name === name); if (!definition) throw new Error(`Missing index ${name}`); return { getAll: (key) => { this.indexReads.push({ name, key }); const value = (record) => Array.isArray(definition.keyPath) ? definition.keyPath.map((path) => record[path]) : record[definition.keyPath]; const matches = (record) => { const indexed = value(record); return Array.isArray(indexed) && Array.isArray(key) ? indexed.length === key.length && indexed.every((part, index) => part === key[index]) : indexed === key; }; return request([...this.records.values()].filter(matches).map((entry) => structuredClone(entry))); } }; }
   getAllKeys() { return request([...this.records.keys()]); }
   delete(key) { this.records.delete(key); }
+  clear() { this.clearCalls += 1; this.records.clear(); }
 }
 class MemoryTransaction {
   constructor(db, mode) { this.db = db; this._complete = null; this._snapshot = mode === "readwrite" && db.snapshotAbortedTransactions ? new Map([...db.stores].map(([name, store]) => [name, new Map([...store.records].map(([key, value]) => [key, structuredClone(value)]))])) : null; }
@@ -340,6 +341,29 @@ test("backup round trip preserves IDs and hostile-looking text as ordinary data"
   assert.equal(students[0].id, student.id);
   assert.equal(students[0].fullName, "<script>not code</script> & 'Student'");
   assert.equal(students[0].classId, classroom.id);
+});
+
+test("backup replacement clears each collection once and preserves the previous data if a later write fails", async () => {
+  const source = new MemoryIndexedDb();
+  const incomingClass = await saveClass({ className: "Incoming synthetic class" }, null, source);
+  const incomingStudent = await saveStudent({ fullName: "Incoming synthetic student" }, incomingClass.id, null, source);
+  const replacement = await createBackup(source);
+
+  const target = new MemoryIndexedDb();
+  target.db.snapshotAbortedTransactions = true;
+  const existingClass = await saveClass({ className: "Existing synthetic class" }, null, target);
+  await saveStudent({ fullName: "Existing synthetic student" }, existingClass.id, null, target);
+  await replaceWithBackup(replacement, target);
+  for (const name of Object.keys(replacement.data)) assert.equal(target.db.stores.get(name).clearCalls, 1, `${name} should be cleared once rather than deleting every saved key individually`);
+  assert.deepEqual((await listClasses({}, target)).map((record) => record.id), [incomingClass.id]);
+  assert.deepEqual((await listStudents(incomingClass.id, {}, target)).map((record) => record.id), [incomingStudent.id]);
+
+  const beforeFailure = (await createBackup(target)).data;
+  const studentStore = target.db.stores.get("students"), originalPut = studentStore.put;
+  studentStore.put = function (...args) { throw new Error("synthetic replacement write failure"); };
+  try { await assert.rejects(replaceWithBackup(replacement, target), /Your classroom information was not changed/); }
+  finally { studentStore.put = originalPut; }
+  assert.deepEqual((await createBackup(target)).data, beforeFailure, "a failure after store clears must roll back the full replacement transaction");
 });
 
 test("backup validation rejects malformed, unsupported, duplicate, and orphaned records safely", () => {

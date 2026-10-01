@@ -1087,7 +1087,13 @@ window.addEventListener("pageshow", (event) => { if (event.persisted) { workspac
 async function init() {
   if (!workspaceLock) {
     const lock = await acquireWorkspaceLock();
-    if (lock.status === "busy") { if (!dialogs["workspace-lock"].open) dialogs["workspace-lock"].showModal(); dialogs["workspace-lock"].querySelector("[data-workspace-retry]").focus(); return; }
+    if (lock.status === "busy") {
+      document.querySelector("[data-storage-message]").textContent = "Workspace is open in another tab · your data has not been changed in this tab.";
+      document.querySelector("[data-storage-dot]").dataset.state = "warning";
+      if (!dialogs["workspace-lock"].open) dialogs["workspace-lock"].showModal();
+      dialogs["workspace-lock"].querySelector("[data-workspace-retry]").focus();
+      return;
+    }
     workspaceLock = lock;
     if (dialogs["workspace-lock"].open) dialogs["workspace-lock"].close();
   }

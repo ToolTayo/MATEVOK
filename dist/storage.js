@@ -582,7 +582,7 @@ export async function replaceWithBackup(backup, indexedDb = globalThis.indexedDB
     try {
       for (const name of BACKUP_STORES) {
         const store = tx.objectStore(name);
-        (await result(store.getAllKeys())).forEach((key) => store.delete(key));
+        store.clear();
         safe.data[name].forEach((entry) => store.put(entry));
       }
       await done(tx);

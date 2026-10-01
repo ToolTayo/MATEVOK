@@ -910,6 +910,8 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
       await pause(100);
     }
     assert.equal(secondState, "Try again");
+    const lockedStatus = await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-storage-message]')?.textContent", returnByValue: true });
+    assert.equal(lockedStatus.result.value, "Workspace is open in another tab · your data has not been changed in this tab.", "a blocked tab should not remain stuck on the startup checking message");
     await browser.call("Target.closeTarget", { targetId });
     await pause(500);
     await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-workspace-retry]')?.click()", returnByValue: true });
