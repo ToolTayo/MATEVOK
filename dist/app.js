@@ -1,4 +1,4 @@
-import { ATTENDANCE_STATUSES, QUESTION_TYPES, attendanceCounts, copyActiveRosterToEmptyClass, copyAuthoredAssessmentToClass, copyLessonToClass, createBackup, deleteAssessmentPermanently, deleteClassPermanently, deleteMaterialPermanently, deleteQuestionPermanently, deleteLessonPermanently, deleteClassWorkPermanently, duplicateAuthoredAssessment, duplicateLesson, getLocalDateString, getLocalStoreHealth, getRecord, listAssessments, listAttendanceForDate, listAttendanceHistory, listAttendanceRecords, listClasses, listLessons, listClassWork, listWorkSubmissionsForClass, listWorkSubmissionsForItem, listWorkSubmissionsForStudent, listMaterials, listQuestions, listScores, listScoresForClass, listStudents, materializeMaterialToClass, moveQuestion, questionTotalPoints, replaceWithBackup, reviewRoster, saveAssessment, saveAssessmentToMaterials, saveAttendance, saveAuthoredQuestion, saveClass, saveLesson, saveClassWork, saveWorkSubmissions, saveLessonToMaterials, saveScores, saveStudent, saveStudents, setClassArchived, setStudentArchived, syncAssessmentMaximumToQuestionTotal, updateAssessmentAuthoringStatus, validateBackup, validateAssessmentReady } from "./storage.js";
+import { ATTENDANCE_STATUSES, QUESTION_TYPES, attendanceCounts, copyActiveRosterToEmptyClass, copyAuthoredAssessmentToClass, copyLessonToClass, createBackup, deleteAssessmentPermanently, deleteClassPermanently, deleteMaterialPermanently, deleteQuestionPermanently, deleteLessonPermanently, deleteClassWorkPermanently, duplicateAuthoredAssessment, duplicateLesson, getLocalDateString, getLocalStoreHealth, getRecord, listAssessments, listAttendanceForDate, listAttendanceHistory, listAttendanceRecords, listClasses, listLessons, listClassWork, listWorkSubmissionsForClass, listWorkSubmissionsForItem, listWorkSubmissionsForStudent, listMaterials, listQuestions, listScores, listScoresForClass, listStudents, materializeMaterialToClass, moveQuestion, questionTotalPoints, replaceWithBackup, reviewRoster, saveAssessment, saveAssessmentToMaterials, saveAttendance, saveAuthoredQuestion, saveClass, saveLesson, saveClassWork, saveWorkSubmissions, saveLessonToMaterials, saveScores, saveStudent, saveStudents, setClassArchived, setStudentArchived, setLocalWritePermission, syncAssessmentMaximumToQuestionTotal, updateAssessmentAuthoringStatus, validateBackup, validateAssessmentReady } from "./storage.js";
 import { GENERIC_RAW_POLICY, scoreDisplay, validateScoreInput } from "./gradebook.js";
 import { addTimerMinute, createPickerState, createTimer, formatTimer, generateBalancedGroups, generateBalancedGroupsBySize, groupsPlainText, pauseTimer, pickStudent, resetPickerRound, resetTimer, secureRandomIndex, startTimer, timerSnapshot } from "./classroom.js";
 import { deriveStudentProgress } from "./progress.js";
@@ -8,7 +8,7 @@ import { reviewPastedScores } from "./score-paste.js";
 import { decryptBackup, encryptBackup, isEncryptedBackup, MAX_ENCRYPTED_BACKUP_FILE_BYTES, validateEncryptedBackupEnvelope } from "./backup-crypto.js";
 import { resolveClassToolDestination } from "./class-tool-navigation.js";
 import { nextAttendanceStatus } from "./attendance-keyboard.js";
-import { acquireWorkspaceLock, createSingleFlight } from "./workspace-lock.js";
+import { acquireWorkspaceLock, createSingleFlight, createWorkspaceEditorLease, WORKSPACE_OWNER_KEY, WORKSPACE_RECOVERY_LOCK } from "./workspace-lock.js";
 import { selectLessonReference } from "./lesson-reference.js";
 import { commitSubmissionDraftSnapshot, deriveClassWorkCountsByItem, deriveClassWorkSummary, deriveDueTodayClassWork, submissionDraftIsDirty, WORK_SUBMISSION_LABELS, WORK_SUBMISSION_STATUSES } from "./class-work.js";
 
@@ -17,6 +17,17 @@ const live = document.querySelector("[data-live]");
 const currentLocation = document.querySelector("[data-current-location]");
 const dialogs = Object.fromEntries([...document.querySelectorAll("dialog")].map((dialog) => [dialog.dataset.dialog, dialog]));
 let workspaceLock = null;
+let writeAccessEnabled = false;
+let startupGeneration = 0;
+let initPromise = null;
+const workspaceLease = createWorkspaceEditorLease();
+function hasEditorAccess() {
+  if (!writeAccessEnabled || !workspaceLock || workspaceLock.status === "lost" || workspaceLock.status === "released") return false;
+  const ownsToken = workspaceLease.isOwner();
+  if (ownsToken === false) { handleWorkspaceLockLost(); return false; }
+  return ownsToken === true || workspaceLock.status === "acquired";
+}
+setLocalWritePermission(hasEditorAccess);
 const pendingForms = new WeakSet();
 const state = { classes: [], activeClass: null, students: [], archivedStudents: [], archivedView: false, rosterSearch: "", rosterSearchClassId: "", backup: null, encryptedBackupEnvelope: null, attendanceHistory: [], attendance: null, pendingAttendanceExit: null, assessments: [], overviewScoreCounts: new Map(), gradebookSearch: "", gradebookSearchClassId: "", gradebookScoreFilter: "all", activeAssessment: null, scoreSession: null, scorePaste: null, copy: null, copySuccess: null, rosterCopy: null, classTool: null, pendingScoreExit: null, authoredQuestions: [], lessons: [], lesson: null, lessonSearch: "", classWork: [], workSubmissions: [], classWorkSearch: "", classWorkStatusFilter: "all", classWorkSession: null, pendingClassWorkExit: null, classWorkDelete: null, materials: [], materialSearch: "", materialKind: "all", materialTargetClassId: "", materialSave: null, materialAdd: null, materialDelete: null, progress: null, progressSearch: "", reports: null, dialogReturnFocus: {}, classroom: { picker: createPickerState(), groups: null, groupCount: "", groupSize: "", groupMode: "count", message: "", timer: createTimer(), completionAnnounced: false } };
 
@@ -1081,23 +1092,69 @@ dialogs.restore.addEventListener("cancel", (event) => { if (pendingForms.has(dia
 
 const installButton = document.querySelector("[data-install]"); let installPrompt; window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); installPrompt = event; installButton.hidden = false; }); installButton.addEventListener("click", async () => { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice; installButton.hidden = true; }); window.addEventListener("appinstalled", () => { installButton.hidden = true; });
 const menu = document.querySelector("[data-menu-button]"), sidebar = document.querySelector("[data-sidebar]"), scrim = document.querySelector("[data-sidebar-scrim]"); const closeMenu = () => { sidebar.dataset.open = "false"; menu.setAttribute("aria-expanded", "false"); }; menu.addEventListener("click", () => { const open = sidebar.dataset.open !== "true"; sidebar.dataset.open = String(open); menu.setAttribute("aria-expanded", String(open)); }); scrim.addEventListener("click", closeMenu); document.querySelector('[data-nav-item="My Classes"]')?.addEventListener("click", (event) => { if (!state.activeClass && !state.archivedView && currentLocation.textContent !== "My Materials") return; event.preventDefault(); requestWorkspaceNavigation("My Classes"); }); document.querySelectorAll(".nav-item--available[data-nav-item]").forEach((item) => item.addEventListener("click", () => requestWorkspaceNavigation(item.dataset.navItem))); document.addEventListener("keydown", (event) => { if (event.key !== "Escape") return; if (dialogs["workspace-lock"].open) { event.preventDefault(); event.stopPropagation(); dialogs["workspace-lock"].querySelector("[data-workspace-retry]")?.focus(); return; } if (sidebar.dataset.open === "true") { closeMenu(); menu.focus(); } }, true);
-dialogs["workspace-lock"].querySelector("[data-workspace-retry]").addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; try { await init(); } finally { button.disabled = false; } });
-window.addEventListener("pagehide", () => workspaceLock?.release());
-window.addEventListener("pageshow", (event) => { if (event.persisted) { workspaceLock = null; init(); } });
-async function init() {
-  if (!workspaceLock) {
-    const lock = await acquireWorkspaceLock();
-    if (lock.status === "busy") {
-      document.querySelector("[data-storage-message]").textContent = "Workspace is open in another tab · your data has not been changed in this tab.";
-      document.querySelector("[data-storage-dot]").dataset.state = "warning";
-      if (!dialogs["workspace-lock"].open) dialogs["workspace-lock"].showModal();
-      dialogs["workspace-lock"].querySelector("[data-workspace-retry]").focus();
-      return;
-    }
-    workspaceLock = lock;
-    if (dialogs["workspace-lock"].open) dialogs["workspace-lock"].close();
-  }
-  try { const health = await getLocalStoreHealth(); const warning = workspaceLock.status !== "acquired"; document.querySelector("[data-storage-message]").textContent = `Private device storage is ready · workspace format ${health.schemaVersion}${warning ? " · keep one MATEVOK tab open to avoid stale edits" : ""}`; document.querySelector("[data-storage-dot]").dataset.state = warning ? "warning" : "ready"; await refreshClasses(); renderDashboard(); }
-  catch (error) { document.querySelector("[data-storage-message]").textContent = "Private device storage needs attention. Your information has not been changed."; document.querySelector("[data-storage-dot]").dataset.state = "error"; root.replaceChildren(el("section", { class: "empty-state" }, [el("h1", { text: "Private storage needs attention" }), el("p", { text: error.message }), action("Try again", () => { if (workspaceLock?.status !== "acquired") { workspaceLock?.release(); workspaceLock = null; } return init(); })])); }
+const workspaceLockDialog = dialogs["workspace-lock"], workspaceLockCopy = workspaceLockDialog.querySelector("[data-workspace-lock-copy]"), workspaceRetryButton = workspaceLockDialog.querySelector("[data-workspace-retry]"), workspaceTakeoverButton = workspaceLockDialog.querySelector("[data-workspace-takeover]");
+function showWorkspaceBusy(recoveringLostWindow = false) { workspaceLockCopy.textContent = recoveringLostWindow ? "This window previously lost editing access. Any unsaved edits here remain unsaved. Close the other MATEVOK window, then reload the latest saved data to use this one again; or take over after confirming that other window will become read-only." : "Another MATEVOK window currently has editing access. If it is open, finish there or close it and try again. If it is suspended, you can take over after confirming that the other window will become read-only."; workspaceRetryButton.textContent = recoveringLostWindow ? "Reload latest saved data" : "Try again"; workspaceRetryButton.toggleAttribute("data-reload-after-lock-loss", recoveringLostWindow); workspaceTakeoverButton.hidden = false; document.querySelector("[data-storage-message]").textContent = "Workspace is open in another window · this window has not changed your data."; document.querySelector("[data-storage-dot]").dataset.state = "warning"; if (!workspaceLockDialog.open) workspaceLockDialog.showModal(); workspaceRetryButton.focus(); }
+function handleWorkspaceLockLost() { if (!workspaceLock) return; workspaceLock.status = "lost"; writeAccessEnabled = false; workspaceLease.release(); workspaceLockCopy.textContent = "Another MATEVOK window took over. This window is now read-only, and its saved records are protected. Unsaved edits here cannot be saved. Close the other window, then reload the latest saved data to use this one again."; workspaceRetryButton.textContent = "Reload latest saved data"; workspaceRetryButton.dataset.reloadAfterLockLoss = "true"; workspaceTakeoverButton.hidden = true; document.querySelector("[data-storage-message]").textContent = "This window is read-only · another MATEVOK window has editing access."; document.querySelector("[data-storage-dot]").dataset.state = "warning"; if (!workspaceLockDialog.open) workspaceLockDialog.showModal(); workspaceRetryButton.focus(); announce("Editing access moved to another window. This window is read-only; saved records are safe."); }
+async function reloadPeerWindowsForTakeover() {
+  const worker = navigator.serviceWorker?.controller;
+  if (!worker || new URL(worker.scriptURL).searchParams.get("v") !== "32") return { ok: false, count: 0 };
+  const channel = new MessageChannel();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => { if (settled) return; settled = true; clearTimeout(timeout); channel.port1.close(); resolve(result); };
+    const timeout = setTimeout(() => finish({ ok: false, count: 0 }), 8000);
+    channel.port1.onmessage = (event) => finish(event.data || { ok: false, count: 0 });
+    try { worker.postMessage({ type: "MATEVOK_RELOAD_PEERS_FOR_TAKEOVER" }, [channel.port2]); }
+    catch { finish({ ok: false, count: 0 }); }
+  });
 }
-init();
+workspaceRetryButton.addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; try { await init(); } finally { if (button.isConnected) button.disabled = false; } });
+workspaceTakeoverButton.addEventListener("click", () => show("workspace-takeover"));
+dialogs["workspace-takeover"].querySelector("[data-confirm-workspace-takeover]").addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; hide("workspace-takeover"); let recoveryLock; try { recoveryLock = await acquireWorkspaceLock(undefined, WORKSPACE_RECOVERY_LOCK); if (recoveryLock.status === "busy") { showWorkspaceBusy(workspaceLock?.status === "lost"); errorMessage(new Error("Another window is already recovering the workspace. Wait briefly, then try again. Your saved data is unchanged.")); return; } if (recoveryLock.status !== "acquired") throw new Error("This browser could not coordinate a safe recovery. Close the other MATEVOK window, then choose Try again. Your saved data is unchanged."); const result = await reloadPeerWindowsForTakeover(); if (!result.ok) { showWorkspaceBusy(workspaceLock?.status === "lost"); errorMessage(new Error("MATEVOK could not safely reload the other window. Close it manually, then choose Try again. Your saved data is unchanged.")); return; } await init(); } catch (error) { showWorkspaceBusy(workspaceLock?.status === "lost"); errorMessage(error); } finally { recoveryLock?.release(); if (button.isConnected) button.disabled = false; } });
+window.addEventListener("storage", (event) => { if (event.key === WORKSPACE_OWNER_KEY && event.newValue !== workspaceLease.ownerId) handleWorkspaceLockLost(); });
+window.addEventListener("pagehide", () => { startupGeneration += 1; initPromise = null; writeAccessEnabled = false; workspaceLease.release(); workspaceLock?.release(); workspaceLock = null; });
+window.addEventListener("pageshow", (event) => { if (event.persisted) void init(); });
+async function init() {
+  if (initPromise) return initPromise;
+  const generation = ++startupGeneration;
+  const run = async () => {
+    const recoveringLostWindow = workspaceLock?.status === "lost";
+    if (!workspaceLock || recoveringLostWindow) {
+      writeAccessEnabled = false;
+      let lostBeforeStartupResumed = false;
+      const lock = await acquireWorkspaceLock(undefined, undefined, { onAcquired: () => workspaceLease.claim(), onLost: () => { if (workspaceLock) handleWorkspaceLockLost(); else lostBeforeStartupResumed = true; } });
+      if (generation !== startupGeneration) { lock.release(); return; }
+      if (lock.status === "busy") { showWorkspaceBusy(recoveringLostWindow); return; }
+      workspaceLock = lock;
+      if (lostBeforeStartupResumed || lock.status === "lost") { handleWorkspaceLockLost(); return; }
+      if (lock.status !== "acquired" && !workspaceLease.claim()) { workspaceLock.release(); workspaceLock = null; document.querySelector("[data-storage-message]").textContent = "Private editing coordination needs attention."; document.querySelector("[data-storage-dot]").dataset.state = "error"; root.replaceChildren(el("section", { class: "empty-state" }, [el("h1", { text: "This browser cannot safely open the workspace" }), el("p", { text: "MATEVOK could not create its small device-local editing marker. Your saved records are unchanged. Check this browser's site-storage permission, then retry." }), action("Try again", () => init())])); return; }
+      writeAccessEnabled = true;
+      if (recoveringLostWindow) { state.activeClass = null; state.archivedView = false; state.attendance = null; state.scoreSession = null; state.lesson = null; }
+      var closeLockDialogAfterStartup = workspaceLockDialog.open;
+      if (closeLockDialogAfterStartup) workspaceLockDialog.close();
+    }
+    try {
+      const health = await getLocalStoreHealth();
+      if (generation !== startupGeneration || !hasEditorAccess()) return;
+      const warning = workspaceLock.status !== "acquired";
+      document.querySelector("[data-storage-message]").textContent = `Private device storage is ready · workspace format ${health.schemaVersion}${warning ? " · use one editing window at a time" : ""}`;
+      document.querySelector("[data-storage-dot]").dataset.state = warning ? "warning" : "ready";
+      await refreshClasses();
+      if (generation !== startupGeneration || !hasEditorAccess()) return;
+      renderDashboard();
+      const entryUrl = new URL(location.href);
+      if (entryUrl.searchParams.has("workspace-locked")) { entryUrl.searchParams.delete("workspace-locked"); history.replaceState(null, "", entryUrl); }
+      if (closeLockDialogAfterStartup) requestAnimationFrame(() => document.querySelector('[data-nav-item="My Classes"]')?.focus());
+    } catch (error) {
+      if (workspaceLease.isOwner() === false) { handleWorkspaceLockLost(); return; }
+      workspaceLease.release();
+      workspaceLock?.release(); workspaceLock = null; writeAccessEnabled = false;
+      document.querySelector("[data-storage-message]").textContent = "Private device storage needs attention. Your information has not been changed.";
+      document.querySelector("[data-storage-dot]").dataset.state = "error";
+      root.replaceChildren(el("section", { class: "empty-state" }, [el("h1", { text: "Private storage needs attention" }), el("p", { text: error.message }), action("Try again", () => init())]));
+    }
+  };
+  const pending = run(); initPromise = pending;
+  try { return await pending; } finally { if (initPromise === pending) initPromise = null; }
+}
+if (new URLSearchParams(location.search).has("workspace-locked")) showWorkspaceBusy(); else void init();

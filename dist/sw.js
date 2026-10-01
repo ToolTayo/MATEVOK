@@ -1,10 +1,10 @@
-const CACHE_NAME = "teacher-workspace-shell-v31";
+const CACHE_NAME = "teacher-workspace-shell-v32";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
-  "./startup.js?v=31",
-  "./app.js?v=31",
+  "./startup.js?v=32",
+  "./app.js?v=32",
   "./workspace-lock.js",
   "./storage.js",
   "./backup-status.js",
@@ -34,6 +34,28 @@ self.addEventListener("activate", (event) => {
       .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type !== "MATEVOK_RELOAD_PEERS_FOR_TAKEOVER") return;
+  const sourceId = event.source?.id;
+  const responsePort = event.ports?.[0];
+  event.waitUntil((async () => {
+    const scope = new URL(self.registration.scope);
+    if (!sourceId) { responsePort?.postMessage({ ok: false, count: 0 }); return; }
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const peers = windows.filter((client) => {
+      if (client.id === sourceId) return false;
+      try { const url = new URL(client.url); return url.origin === scope.origin && url.pathname.startsWith(scope.pathname); }
+      catch { return false; }
+    });
+    const recoveryUrl = new URL(scope.href);
+    recoveryUrl.searchParams.set("workspace-locked", "1");
+    const results = await Promise.all(peers.map(async (client) => {
+      try { return Boolean(await client.navigate(recoveryUrl.href)); } catch { return false; }
+    }));
+    responsePort?.postMessage({ ok: results.every(Boolean), count: peers.length, failed: results.filter((success) => !success).length });
+  })());
 });
 
 async function networkFirst(request) {

@@ -280,7 +280,7 @@ test("an empty class can copy active names from another class without bringing i
   assert.match(rosterUi, /new independent records/);
   assert.match(rosterSubmit, /copy\.submitting \|\| !form\.elements\.confirmCopy\.checked/);
   assert.match(rosterSubmit, /copyActiveRosterToEmptyClass\(sourceId, copy\.targetClassId\)/);
-  assert.match(rosterCopy, /db\.transaction\(\["classes", "students"\], "readwrite"\)/);
+  assert.match(rosterCopy, /writeTransaction\(db, \["classes", "students"\]\)/);
   assert.match(rosterCopy, /students\.index\("classId"\)\.getAll\(classId\)/);
   assert.match(rosterCopy, /if \(targetStudents\.length\)/);
   assert.match(rosterCopy, /sourceStudents\.filter\(\(student\) => !student\.archivedAt\)/);

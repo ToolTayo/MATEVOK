@@ -10,7 +10,9 @@ import {
   getLocalStoreHealth,
   normalizeText,
   openTeacherWorkspaceDb,
-  prepareRecord
+  prepareRecord,
+  saveClass,
+  setLocalWritePermission
 } from "../dist/storage.js";
 
 class FakeStore {
@@ -169,4 +171,14 @@ test("storage initialization creates and reads the current schema metadata", asy
   const health = await getLocalStoreHealth(indexedDb);
   assert.deepEqual(health, { ready: true, schemaVersion: LOCAL_SCHEMA_VERSION, databaseVersion: LOCAL_SCHEMA_VERSION });
   assert.equal(indexedDb.database.closed, true);
+});
+
+test("stale lock ownership blocks every IndexedDB write before a transaction can begin", async () => {
+  const indexedDb = new FakeIndexedDb();
+  setLocalWritePermission(() => false);
+  try {
+    await assert.rejects(saveClass({ className: "Must not save" }, null, indexedDb), /no longer has editing access/);
+    assert.equal(indexedDb.database.stores.get("classes").records.length, 0);
+    assert.equal(indexedDb.database.closed, true);
+  } finally { setLocalWritePermission(() => true); }
 });

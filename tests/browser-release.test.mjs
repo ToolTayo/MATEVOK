@@ -902,19 +902,26 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     const lockTab = (await (await fetch(`${cdpHttp}/json/list`)).json()).find((item) => item.type === "page" && item.url.includes("second-tab=1"));
     assert.ok(lockTab, "second tab was not opened");
     const second = cdp(lockTab.webSocketDebuggerUrl); await second.ready;
+    second.on("Runtime.exceptionThrown", (event) => consoleIssues.push(event.exceptionDetails?.text || "uncaught exception in recovery tab"));
+    second.on("Log.entryAdded", (event) => { if (["error", "warning"].includes(event.entry.level)) consoleIssues.push(`${event.entry.level} in recovery tab: ${event.entry.text}`); });
+    second.on("Network.requestWillBeSent", (event) => pageRequests.push({ url: event.request.url, method: event.request.method }));
     let secondState = false;
     for (let attempt = 0; attempt < 100; attempt++) {
-      const response = await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-dialog=workspace-lock]')?.open && document.querySelector('[data-workspace-retry]')?.textContent.trim()", returnByValue: true });
-      secondState = response.result.value;
-      if (secondState === "Try again") break;
+      const response = await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-dialog=workspace-lock]')?.open && [document.querySelector('[data-workspace-retry]')?.textContent.trim(),document.querySelector('[data-workspace-takeover]')?.textContent.trim()]", returnByValue: true });
+      secondState = response.result.value?.[0] === "Try again" && response.result.value?.[1] === "Take over workspace…";
+      if (secondState) break;
       await pause(100);
     }
-    assert.equal(secondState, "Try again");
+    assert.equal(secondState, true, "a blocked window must offer both a normal retry and an explicit stale-window recovery path");
     const lockedStatus = await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-storage-message]')?.textContent", returnByValue: true });
-    assert.equal(lockedStatus.result.value, "Workspace is open in another tab · your data has not been changed in this tab.", "a blocked tab should not remain stuck on the startup checking message");
-    await browser.call("Target.closeTarget", { targetId });
-    await pause(500);
-    await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-workspace-retry]')?.click()", returnByValue: true });
+    assert.match(lockedStatus.result.value, /another window/);
+    await page.call("Page.setWebLifecycleState", { state: "frozen" });
+    await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-workspace-takeover]')?.click();true", returnByValue: true });
+    const takeoverReview = await second.call("Runtime.evaluate", { expression: "({open:document.querySelector('[data-dialog=workspace-takeover]')?.open,text:document.querySelector('[data-workspace-takeover-copy]')?.textContent})", returnByValue: true });
+    assert.equal(takeoverReview.result.value.open, true);
+    assert.match(takeoverReview.result.value.text, /read-only[\s\S]*unsaved edits[\s\S]*saved records/);
+    await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-confirm-workspace-takeover]')?.click();true", returnByValue: true });
+    await page.call("Page.setWebLifecycleState", { state: "active" });
     let reopenedStorage = "";
     for (let attempt = 0; attempt < 100; attempt++) {
       const status = await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-storage-message]')?.textContent", returnByValue: true });
@@ -922,12 +929,73 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
       if (reopenedStorage.includes("ready")) break;
       await pause(100);
     }
-    assert.match(reopenedStorage, /ready/i, "second tab could not retry storage after the first tab closed");
-    const secondClass = await second.call("Runtime.evaluate", { expression: "[...document.querySelectorAll('.class-card h2')].some(x=>x.textContent==='Synthetic Release QA')", returnByValue: true });
-    assert.equal(secondClass.result.value, true, "second tab did not reopen saved synthetic data");
-    second.close();
+    assert.match(reopenedStorage, /ready/i, "explicit takeover did not recover the editor from a frozen lock owner");
+    await second.call("Runtime.evaluate", { expression: "document.querySelector('[data-nav-item=\\\"My Classes\\\"]')?.click();true", returnByValue: true });
+    let secondClass = false;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const status = await second.call("Runtime.evaluate", { expression: "[...document.querySelectorAll('.class-card h2')].some(x=>x.textContent==='Synthetic Release QA')", returnByValue: true });
+      secondClass = status.result.value;
+      if (secondClass) break;
+      await pause(100);
+    }
+    assert.equal(secondClass, true, "takeover did not preserve and reopen saved synthetic data");
+    const secondDialogs = await second.call("Runtime.evaluate", { expression: "[...document.querySelectorAll('dialog[open]')].length", returnByValue: true });
+    assert.equal(secondDialogs.result.value, 0, "the lock/recovery overlay must be removed after successful takeover");
+    let oldWindowLocked = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const status = await page.call("Runtime.evaluate", { expression: "({url:location.href,open:document.querySelector('[data-dialog=workspace-lock]')?.open,status:document.querySelector('[data-storage-message]')?.textContent,copy:document.querySelector('[data-workspace-lock-copy]')?.textContent})", returnByValue: true });
+      const current = status.result.value;
+      oldWindowLocked = current?.open && current.url.includes("workspace-locked=1") && /another window/i.test(current.status || "");
+      if (oldWindowLocked) break;
+      await pause(100);
+    }
+    assert.equal(oldWindowLocked, true, "the frozen previous owner must be navigated to the new app's blocked/recovery screen");
+    const staleWrite = await page.call("Runtime.evaluate", { expression: "import('./storage.js').then(async s=>{try{await s.saveClass({className:'Must not be saved by stale window'});return {rejected:false}}catch(error){return {rejected:true,message:error.message}}})", awaitPromise: true, returnByValue: true });
+    assert.equal(staleWrite.result.value.rejected, true, "a stolen/frozen old editor must not perform a later IndexedDB write");
+    assert.match(staleWrite.result.value.message, /no longer has editing access/);
+
+    await browser.call("Target.createTarget", { url: `${origin}/?retry-after-close=1` });
+    await pause(400);
+    const retryTab = (await (await fetch(`${cdpHttp}/json/list`)).json()).find((item) => item.type === "page" && item.url.includes("retry-after-close=1"));
+    assert.ok(retryTab, "retry tab was not opened");
+    const retry = cdp(retryTab.webSocketDebuggerUrl); await retry.ready;
+    retry.on("Runtime.exceptionThrown", (event) => consoleIssues.push(event.exceptionDetails?.text || "uncaught exception in retry tab"));
+    let retryLocked = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const status = await retry.call("Runtime.evaluate", { expression: "document.querySelector('[data-dialog=workspace-lock]')?.open", returnByValue: true });
+      if (status.result.value) { retryLocked = true; break; }
+      await pause(100);
+    }
+    assert.equal(retryLocked, true, "a third window must remain blocked while the current editor owns the lock");
     await browser.call("Target.closeTarget", { targetId: lockTab.id });
     await pause(500);
+    await retry.call("Runtime.evaluate", { expression: "document.querySelector('[data-workspace-retry]')?.click();true", returnByValue: true });
+    let retryReady = "";
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const status = await retry.call("Runtime.evaluate", { expression: "document.querySelector('[data-storage-message]')?.textContent", returnByValue: true });
+      retryReady = status.result.value || "";
+      if (/ready/i.test(retryReady)) break;
+      await pause(100);
+    }
+    assert.match(retryReady, /ready/i, "Retry must acquire normally after the real owner closes");
+    const retryData = await retry.call("Runtime.evaluate", { expression: "import('./storage.js').then(s=>s.listClasses()).then(classes=>classes.some(x=>x.className==='Synthetic Release QA'))", awaitPromise: true, returnByValue: true });
+    assert.equal(retryData.result.value, true, "Retry after close must preserve existing IndexedDB records");
+    await retry.call("Page.reload");
+    let refreshedReady = "";
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const status = await retry.call("Runtime.evaluate", { expression: "document.querySelector('[data-storage-message]')?.textContent", returnByValue: true });
+      refreshedReady = status.result.value || "";
+      if (/ready/i.test(refreshedReady)) break;
+      await pause(100);
+    }
+    assert.match(refreshedReady, /ready/i, "refresh must release and reacquire the workspace lock normally");
+    const refreshData = await retry.call("Runtime.evaluate", { expression: "import('./storage.js').then(s=>s.listClasses()).then(classes=>classes.some(x=>x.className==='Synthetic Release QA'))", awaitPromise: true, returnByValue: true });
+    assert.equal(refreshData.result.value, true, "refresh must preserve saved IndexedDB records");
+    retry.close();
+    await browser.call("Target.closeTarget", { targetId: retryTab.id });
+    await browser.call("Target.closeTarget", { targetId });
+    second.close();
+    await pause(300);
 
     const failureTarget = await browser.call("Target.createTarget", { url: "about:blank" });
     const failureTab = (await (await fetch(`${cdpHttp}/json/list`)).json()).find((item) => item.id === failureTarget.targetId);

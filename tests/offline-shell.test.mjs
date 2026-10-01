@@ -25,9 +25,10 @@ const cache = {
 
 globalThis.self = {
   location: { origin: "https://teacher-workspace.test" },
+  registration: { scope: "https://teacher-workspace.test/dist/" },
   addEventListener: (name, handler) => events.set(name, handler),
   skipWaiting: async () => undefined,
-  clients: { claim: async () => undefined }
+  clients: { claim: async () => undefined, matchAll: async () => [] }
 };
 globalThis.caches = {
   open: async (name) => { openedCaches.push(name); return cache; },
@@ -125,4 +126,30 @@ test("offline navigation falls back to the cached application shell", async () =
   const response = await responseWork;
   assert.equal(response.status, 200);
   assert.equal(await response.text(), "cached:./index.html");
+});
+
+test("confirmed editor recovery reloads peer windows into a blocked state without exposing records", async () => {
+  const navigated = [];
+  self.clients.matchAll = async (options) => {
+    assert.deepEqual(options, { type: "window", includeUncontrolled: true });
+    return [
+      { id: "requesting-window", url: "https://teacher-workspace.test/dist/", navigate: async () => { throw new Error("must not reload the requester"); } },
+      { id: "stale-window", url: "https://teacher-workspace.test/dist/?tab=old", navigate: async (url) => { navigated.push(url); return { id: "stale-window" }; } },
+      { id: "outside-scope", url: "https://teacher-workspace.test/other/index.html", navigate: async () => { throw new Error("outside-scope window must not reload"); } },
+      { id: "external-origin", url: "https://other.test/dist/", navigate: async () => { throw new Error("external origin must not reload"); } }
+    ];
+  };
+  let work;
+  let response;
+  events.get("message")({
+    data: { type: "MATEVOK_RELOAD_PEERS_FOR_TAKEOVER" },
+    source: { id: "requesting-window" },
+    ports: [{ postMessage: (value) => { response = value; } }],
+    waitUntil: (promise) => { work = promise; }
+  });
+  await work;
+  assert.deepEqual(response, { ok: true, count: 1, failed: 0 });
+  assert.equal(navigated.length, 1);
+  assert.equal(navigated[0], "https://teacher-workspace.test/dist/?workspace-locked=1");
+  assert.equal(/student|score|attendance|passphrase/i.test(navigated[0]), false, "recovery navigation must not contain teacher data");
 });
