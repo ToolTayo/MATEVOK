@@ -2,8 +2,8 @@ export const ENCRYPTED_BACKUP_FORMAT = "teacher-workspace-encrypted-backup";
 export const ENCRYPTED_BACKUP_VERSION = 1;
 export const BACKUP_PASSPHRASE_MIN_LENGTH = 12;
 const KDF_ITERATIONS = 600_000;
-export const MAX_ENCRYPTED_BACKUP_FILE_BYTES = 25 * 1024 * 1024;
-const MAX_CIPHERTEXT_BYTES = 18 * 1024 * 1024;
+export const MAX_ENCRYPTED_BACKUP_FILE_BYTES = 36_000_000;
+const MAX_CIPHERTEXT_BYTES = 24 * 1024 * 1024;
 
 function bytesToBase64(bytes) {
   let binary = "";

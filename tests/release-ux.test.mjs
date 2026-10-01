@@ -496,6 +496,8 @@ test("backup export encrypts files and restore checks encrypted or legacy input 
   assert.match(app, /showBackupRestoreReview\(parsed, false\)/);
   assert.match(app, /finally \{ input\.value = ""; \}/);
   assert.match(app, /window\.setTimeout\(\(\) => \{ link\.remove\(\); URL\.revokeObjectURL\(url\); \}, 1000\)/);
+  assert.match(app, /36 MB import limit/);
+  assert.match(app, /backup file smaller than 36 MB/);
   assert.match(app, /data-restore-security-note/);
   assert.match(html, /role="status" aria-live="polite" data-restore-progress/);
   assert.match(app, /Restoring this backup… Keep this window open. Larger backups may take a little while./);

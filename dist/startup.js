@@ -1,4 +1,4 @@
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=32").catch(() => {});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=33").catch(() => {});
 
 window.addEventListener("error", (event) => {
   if (!String(event.filename || "").includes("app.js")) return;
