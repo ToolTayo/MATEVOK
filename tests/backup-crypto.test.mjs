@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BACKUP_PASSPHRASE_MIN_LENGTH, decryptBackup, encryptBackup, isEncryptedBackup, validateEncryptedBackupEnvelope } from "../dist/backup-crypto.js";
+import { BACKUP_PASSPHRASE_MIN_LENGTH, MAX_ENCRYPTED_BACKUP_FILE_BYTES, decryptBackup, encryptBackup, isEncryptedBackup, validateEncryptedBackupEnvelope } from "../dist/backup-crypto.js";
 import { validateBackup } from "../dist/storage.js";
 
 const sampleBackup = { format: "teacher-workspace-backup", backupVersion: 1, data: { classes: [{ id: "class-1", className: "Sensitive class" }] } };
@@ -31,9 +31,13 @@ test("encrypted backup envelope rejects unsupported parameters and weak passphra
   await assert.rejects(encryptBackup(sampleBackup, "too-short"), new RegExp(`at least ${BACKUP_PASSPHRASE_MIN_LENGTH} characters`));
 });
 
+test("encrypted backup file cap accommodates school-year exports without changing the envelope", () => {
+  assert.equal(MAX_ENCRYPTED_BACKUP_FILE_BYTES, 25 * 1024 * 1024);
+});
+
 test("empty, malformed, oversized, and authenticated-but-invalid backup files fail closed", async () => {
   const encrypted = await encryptBackup(sampleBackup, passphrase);
-  for (const malformed of [null, {}, { ...encrypted, ciphertext: "" }, { ...encrypted, salt: "not base64!" }, { ...encrypted, ciphertext: "A".repeat(20 * 1024 * 1024) }]) {
+  for (const malformed of [null, {}, { ...encrypted, ciphertext: "" }, { ...encrypted, salt: "not base64!" }, { ...encrypted, ciphertext: "A".repeat(25 * 1024 * 1024) }]) {
     assert.throws(() => validateEncryptedBackupEnvelope(malformed));
   }
 

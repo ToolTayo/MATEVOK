@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assessmentCsv, attendanceCsv, csvEscape, deriveAssessmentResults, deriveAttendanceSummary, deriveClassOverview, deriveClassRoster, rosterCsv } from "../dist/reports.js";
+import { assessmentCsv, attendanceCsv, classWorkStatusCsv, csvEscape, deriveAssessmentResults, deriveAttendanceSummary, deriveClassOverview, deriveClassRoster, deriveClassWorkStatusReport, rosterCsv } from "../dist/reports.js";
+import { commitSubmissionDraftSnapshot, deriveClassWorkCountsByItem, deriveClassWorkSummary, deriveDueTodayClassWork, submissionDraftIsDirty } from "../dist/class-work.js";
 
 const students = [
   { id: "a", classId: "one", fullName: "Ada, \"A\"" },
@@ -68,6 +69,62 @@ test("CSV quotes hostile text and protects spreadsheet formulas", () => {
   assert.match(attendanceCsv(attendance), /Attendance status/);
   const results = deriveAssessmentResults({ classId: "one", students, assessments, scores }).reports[0];
   assert.match(assessmentCsv(results), /Raw percentage/);
+});
+
+test("class-work report keeps submission state separate from scores and includes read-only archived history", () => {
+  const workItem = { id: "work-one", classId: "one", title: "=Worksheet, 1", dueDate: "2026-09-02", assessmentId: "quiz" };
+  const reportStudents = [...students, { id: "d", classId: "one", fullName: "Cora" }];
+  const report = deriveClassWorkStatusReport({ classId: "one", workItem, students: reportStudents, assessments, submissions: [
+    { id: "s-a", classId: "one", workItemId: "work-one", studentId: "a", status: "submitted" },
+    { id: "s-b", classId: "one", workItemId: "work-one", studentId: "b", status: "excused" },
+    { id: "other-class", classId: "two", workItemId: "work-one", studentId: "c", status: "missing" }
+  ] });
+  assert.equal(report.assessment.title, "Quiz, 1");
+  assert.deepEqual(report.activeCounts, { submitted: 1, missing: 0, excused: 0, "not-recorded": 1 });
+  assert.deepEqual(report.counts, { submitted: 1, missing: 0, excused: 1, "not-recorded": 1 });
+  assert.equal(report.rows.find((row) => row.studentId === "a").status, "submitted", "a recorded zero score does not alter submission state");
+  assert.equal(report.rows.find((row) => row.studentId === "b").status, "excused");
+  assert.equal(report.rows.length, 3, "cross-class statuses cannot leak into the report");
+  assert.equal(deriveClassWorkStatusReport({ classId: "two", workItem, students, submissions: [] }), null);
+  const csv = classWorkStatusCsv(report);
+  assert.match(csv, /'=Worksheet, 1/);
+  assert.match(csv, /Not recorded/);
+  assert.match(csv, /Archived/);
+});
+
+test("multi-item Class Work counts match individual summaries and remain fast for a school-year list", () => {
+  const roster = [...Array.from({ length: 50 }, (_, index) => ({ id: `s${index}`, classId: "one", fullName: `Student ${index}` })), ...Array.from({ length: 4 }, (_, index) => ({ id: `arch${index}`, classId: "one", fullName: `Archived ${index}`, archivedAt: "2026-01-01" }))];
+  const workItems = Array.from({ length: 240 }, (_, index) => ({ id: `w${index}`, classId: "one", title: `Work ${index}`, dueDate: index < 3 ? "2026-09-30" : "" }));
+  const statuses = ["submitted", "missing", "excused"];
+  const submissions = workItems.flatMap((item, itemIndex) => roster.filter((_, studentIndex) => (studentIndex + itemIndex) % 7 !== 0).map((student, studentIndex) => ({ id: `${item.id}-${student.id}`, classId: "one", workItemId: item.id, studentId: student.id, status: statuses[(studentIndex + itemIndex) % statuses.length] })));
+  submissions.push({ id: "cross-class", classId: "two", workItemId: workItems[0].id, studentId: roster[0].id, status: "missing" });
+  const started = performance.now();
+  const counts = deriveClassWorkCountsByItem({ classId: "one", workItems, students: roster, submissions });
+  const elapsed = performance.now() - started;
+  assert.equal(counts.size, 240);
+  assert.ok(elapsed < 250, `240 item summaries should be calculated in one pass, not by repeatedly filtering ${submissions.length} statuses (${elapsed.toFixed(1)}ms)`);
+  for (const index of [0, 1, 119, 239]) {
+    const expected = deriveClassWorkSummary({ classId: "one", workItemId: workItems[index].id, students: roster, submissions });
+    assert.deepEqual(counts.get(workItems[index].id).counts, expected.counts);
+    assert.deepEqual(counts.get(workItems[index].id).activeCounts, expected.activeCounts);
+    assert.equal(counts.get(workItems[index].id).archivedCount, expected.archivedCount);
+  }
+  const due = deriveDueTodayClassWork({ classId: "one", today: "2026-09-30", workItems, students: roster.filter((student) => !student.archivedAt), submissions });
+  assert.equal(due.items.length, 3);
+  assert.equal(due.counts.submitted + due.counts.missing + due.counts.excused + due.counts["not-recorded"], 150);
+});
+
+test("a status edit made after a write snapshot stays dirty instead of being mislabeled saved", () => {
+  const original = new Map([["a", ""], ["b", "missing"]]);
+  const session = { original, draft: new Map([["a", "submitted"], ["b", "missing"]]), saved: false, dirty: true };
+  const persistedSnapshot = new Map(session.draft);
+  session.draft.set("a", "");
+  commitSubmissionDraftSnapshot(session, persistedSnapshot);
+  assert.equal(session.original.get("a"), "submitted", "only the exact persisted snapshot becomes the baseline");
+  assert.equal(session.draft.get("a"), "");
+  assert.equal(session.saved, true);
+  assert.equal(session.dirty, true);
+  assert.equal(submissionDraftIsDirty(session.original, session.draft), true);
 });
 
 test("report derivation remains responsive for a realistic local class", () => {

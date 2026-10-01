@@ -1,10 +1,10 @@
-const CACHE_NAME = "teacher-workspace-shell-v22";
+const CACHE_NAME = "teacher-workspace-shell-v30";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
-  "./startup.js?v=22",
-  "./app.js?v=22",
+  "./startup.js?v=30",
+  "./app.js?v=30",
   "./workspace-lock.js",
   "./storage.js",
   "./backup-status.js",
@@ -16,6 +16,8 @@ const APP_SHELL = [
   "./classroom.js",
   "./progress.js",
   "./reports.js",
+  "./class-work.js",
+  "./lesson-reference.js",
   "./manifest.webmanifest",
   "./favicon.svg"
 ];

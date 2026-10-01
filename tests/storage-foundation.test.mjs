@@ -103,7 +103,7 @@ test("schema v6 upgrades add My Materials without replacing existing class store
   assert.equal(database.stores.has("materials"), true);
   assert.equal(database.stores.get("classes").records[0].id, savedClass.id);
   assert.equal(database.stores.get(META_STORE).records.at(-1).value, LOCAL_SCHEMA_VERSION);
-  assert.equal(LOCAL_SCHEMA_VERSION, 8);
+  assert.equal(LOCAL_SCHEMA_VERSION, 9);
 });
 
 test("schema v7 advances the compatibility barrier without replacing existing records or stores", () => {
@@ -120,7 +120,27 @@ test("schema v7 advances the compatibility barrier without replacing existing re
   assert.equal(database.stores.size, originalStores);
   assert.equal(database.stores.get("classes").records[0].id, savedClass.id);
   assert.equal(database.stores.get("materials").records[0].id, savedMaterial.id);
-  assert.equal(database.stores.get(META_STORE).records.at(-1).value, 8);
+  assert.equal(database.stores.get(META_STORE).records.at(-1).value, 9);
+});
+
+test("schema v8 adds indexed Class Work stores without replacing existing teacher records", () => {
+  const database = new FakeDatabase(); database.version = 8;
+  database.createObjectStore(META_STORE, { keyPath: "key" });
+  for (const definition of STORE_DEFINITIONS.filter(({ name }) => !["classWork", "workSubmissions"].includes(name))) {
+    const store = database.createObjectStore(definition.name, { keyPath: "id" });
+    for (const [name, keyPath] of definition.indexes) store.createIndex(name, keyPath, { unique: false });
+  }
+  const savedClass = { id: "class-v8", className: "Preserved class" }, savedStudent = { id: "student-v8", classId: "class-v8", fullName: "Preserved student" };
+  database.stores.get("classes").put(savedClass); database.stores.get("students").put(savedStudent);
+  const transaction = { objectStore: (name) => database.stores.get(name) };
+  applySchemaUpgrade(database, 8, transaction);
+  assert.equal(database.stores.has("classWork"), true);
+  assert.equal(database.stores.has("workSubmissions"), true);
+  assert.deepEqual(database.stores.get("classWork").indexes.map(({ name }) => name), ["classId", "classDueDate", "assessmentId"]);
+  assert.deepEqual(database.stores.get("workSubmissions").indexes.map(({ name }) => name), ["classId", "workItemId", "studentId", "classStudent"]);
+  assert.equal(database.stores.get("classes").records[0].id, savedClass.id);
+  assert.equal(database.stores.get("students").records[0].id, savedStudent.id);
+  assert.equal(database.stores.get(META_STORE).records.at(-1).value, 9);
 });
 
 test("record preparation normalizes common fields and rejects unknown stores", () => {

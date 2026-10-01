@@ -7,6 +7,13 @@ import { fileURLToPath } from "node:url";
 const events = new Map();
 const cached = new Map();
 const deleted = [];
+const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
+const serviceWorkerSource = await readFile(join(distDirectory, "sw.js"), "utf8");
+const currentShellVersion = Number(serviceWorkerSource.match(/^const CACHE_NAME = "teacher-workspace-shell-v(\d+)";$/m)?.[1]);
+assert.ok(Number.isInteger(currentShellVersion), "service worker must declare one numeric shell version");
+const currentCacheName = `teacher-workspace-shell-v${currentShellVersion}`;
+const staleCacheNames = ["old-shell", ...Array.from({ length: Math.max(0, currentShellVersion - 13) }, (_, index) => `teacher-workspace-shell-v${index + 13}`)];
+const openedCaches = [];
 const cache = {
   async addAll(resources) {
     for (const resource of resources) cached.set(resource, new Response(`cached:${resource}`));
@@ -23,8 +30,8 @@ globalThis.self = {
   clients: { claim: async () => undefined }
 };
 globalThis.caches = {
-  open: async () => cache,
-  keys: async () => ["teacher-workspace-shell-v13", "teacher-workspace-shell-v14", "teacher-workspace-shell-v15", "old-shell", "teacher-workspace-shell-v16", "teacher-workspace-shell-v17", "teacher-workspace-shell-v18", "teacher-workspace-shell-v19", "teacher-workspace-shell-v20", "teacher-workspace-shell-v21", "teacher-workspace-shell-v22"],
+  open: async (name) => { openedCaches.push(name); return cache; },
+  keys: async () => staleCacheNames,
   delete: async (key) => { deleted.push(key); return true; },
   match: async (request) => cached.get(typeof request === "string" ? request : request.url)
 };
@@ -33,13 +40,19 @@ globalThis.fetch = async () => { throw new Error("offline"); };
 await import(new URL("../dist/sw.js?test=offline-shell", import.meta.url));
 
 test("precache covers every local static dependency of the cold-start scripts", async () => {
-  const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
   const html = await readFile(join(distDirectory, "index.html"), "utf8");
-  const sw = await readFile(join(distDirectory, "sw.js"), "utf8");
-  const shellSource = sw.match(/const APP_SHELL = \[([\s\S]*?)\];/)?.[1];
+  const startup = await readFile(join(distDirectory, "startup.js"), "utf8");
+  const shellSource = serviceWorkerSource.match(/const APP_SHELL = \[([\s\S]*?)\];/)?.[1];
   assert.ok(shellSource, "service worker must define its shell asset list");
+  const htmlScripts = [...html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)].map(([, value]) => value);
+  assert.ok(htmlScripts.includes(`startup.js?v=${currentShellVersion}`), "HTML startup script must match the active service-worker version");
+  assert.ok(htmlScripts.includes(`app.js?v=${currentShellVersion}`), "HTML application script must match the active service-worker version");
+  assert.ok(startup.includes(`./sw.js?v=${currentShellVersion}`), "service-worker registration must match the active shell version");
+  assert.ok(shellSource.includes(`./startup.js?v=${currentShellVersion}`), "precache startup URL must match the active shell version");
+  assert.ok(shellSource.includes(`./app.js?v=${currentShellVersion}`), "precache app URL must match the active shell version");
+  assert.equal((serviceWorkerSource.match(/teacher-workspace-shell-v\d+/g) || []).length, 1, "only CACHE_NAME should define the current shell version");
   const shellPaths = new Set([...shellSource.matchAll(/["']([^"']+)["']/g)].map(([, value]) => new URL(value, "https://matevok.test/dist/").pathname.replace(/^\/dist\//, "")));
-  const entryScripts = [...html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)].map(([, value]) => new URL(value, "https://matevok.test/dist/").pathname.replace(/^\/dist\//, ""));
+  const entryScripts = htmlScripts.map((value) => new URL(value, "https://matevok.test/dist/").pathname.replace(/^\/dist\//, ""));
   const requiredScripts = new Set();
   const pending = entryScripts.filter((script) => script.endsWith(".js"));
 
@@ -61,13 +74,28 @@ test("precache covers every local static dependency of the cold-start scripts", 
   }
 });
 
+test("PWA manifest declares Chromium install icon sizes using the existing scalable mark", async () => {
+  const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
+  const manifest = JSON.parse(await readFile(join(distDirectory, "manifest.webmanifest"), "utf8"));
+  const svg = await readFile(join(distDirectory, "favicon.svg"), "utf8");
+  const declaredSizes = new Set(manifest.icons.flatMap((icon) => icon.sizes.split(/\s+/)));
+
+  assert.equal(manifest.start_url, "./");
+  assert.equal(manifest.display, "standalone");
+  assert.ok(declaredSizes.has("192x192"));
+  assert.ok(declaredSizes.has("512x512"));
+  assert.equal(manifest.icons.every((icon) => icon.src === "favicon.svg" && icon.type === "image/svg+xml"), true);
+  assert.match(svg, /width="512" height="512"/);
+});
+
 test("offline shell installs startup modules and removes stale application caches", async () => {
   let installWork;
   events.get("install")({ waitUntil: (work) => { installWork = work; } });
   await installWork;
+  assert.deepEqual(openedCaches, [currentCacheName]);
   assert.equal(cached.has("./index.html"), true);
-  assert.equal(cached.has("./startup.js?v=22"), true);
-  assert.equal(cached.has("./app.js?v=22"), true);
+  assert.equal(cached.has(`./startup.js?v=${currentShellVersion}`), true);
+  assert.equal(cached.has(`./app.js?v=${currentShellVersion}`), true);
   assert.equal(cached.has("./workspace-lock.js"), true);
   assert.equal(cached.has("./storage.js"), true);
   assert.equal(cached.has("./backup-status.js"), true);
@@ -78,12 +106,14 @@ test("offline shell installs startup modules and removes stale application cache
   assert.equal(cached.has("./attendance-keyboard.js"), true);
   assert.equal(cached.has("./classroom.js"), true);
   assert.equal(cached.has("./reports.js"), true);
+  assert.equal(cached.has("./class-work.js"), true);
+  assert.equal(cached.has("./lesson-reference.js"), true);
   assert.equal([...cached.keys()].some((key) => /^\.\/(?:students|attendance|scores)(?:\/|$)/i.test(key)), false);
 
   let activateWork;
   events.get("activate")({ waitUntil: (work) => { activateWork = work; } });
   await activateWork;
-  assert.deepEqual(deleted, ["teacher-workspace-shell-v13", "teacher-workspace-shell-v14", "teacher-workspace-shell-v15", "old-shell", "teacher-workspace-shell-v16", "teacher-workspace-shell-v17", "teacher-workspace-shell-v18", "teacher-workspace-shell-v19", "teacher-workspace-shell-v20", "teacher-workspace-shell-v21"]);
+  assert.deepEqual(deleted, staleCacheNames);
 });
 
 test("offline navigation falls back to the cached application shell", async () => {

@@ -3,6 +3,7 @@
  * canonical records and return display/export data only; nothing is saved.
  */
 import { compareDecimal, genericRawPercentage, normalizeDecimalInput, scoreDisplay, sumDecimalStrings } from "./gradebook.js";
+import { deriveClassWorkSummary } from "./class-work.js";
 
 const statuses = Object.freeze(["present", "absent", "late", "excused"]);
 const byName = (left, right) => String(left.fullName).localeCompare(String(right.fullName), undefined, { sensitivity: "base" });
@@ -93,4 +94,15 @@ export function attendanceCsv(report) {
 
 export function assessmentCsv(report) {
   return toCsv(["Assessment", "Date", "Student name", "Roster status", "Raw score", "Maximum score", "Raw percentage", "Score status"], report.rows.map((row) => [report.assessment.title, report.assessment.date, row.fullName, row.archived ? "Archived" : "Active", row.entered ? row.rawScore : "", row.maximumScore, row.percentage || "", row.entered ? "Recorded" : "Missing"]));
+}
+
+export function deriveClassWorkStatusReport({ classId, workItem, students = [], submissions = [], assessments = [] }) {
+  if (!workItem || workItem.classId !== classId) return null;
+  const summary = deriveClassWorkSummary({ classId, workItemId: workItem.id, students, submissions });
+  const assessment = workItem.assessmentId ? assessments.find((item) => item.id === workItem.assessmentId && item.classId === classId) || null : null;
+  return Object.freeze({ workItem, assessment, rows: summary.rows, counts: summary.counts, activeCounts: summary.activeCounts, activeCount: summary.activeCount, archivedCount: summary.archivedCount });
+}
+
+export function classWorkStatusCsv(report) {
+  return toCsv(["Class work", "Due date", "Student name", "Roster status", "Submission status", "Related assessment"], report.rows.map((row) => [report.workItem.title, report.workItem.dueDate, row.fullName, row.archived ? "Archived" : "Active", row.status === "not-recorded" ? "Not recorded" : row.status[0].toUpperCase() + row.status.slice(1), report.assessment?.title || ""]));
 }

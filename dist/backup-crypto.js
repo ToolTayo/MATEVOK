@@ -2,7 +2,8 @@ export const ENCRYPTED_BACKUP_FORMAT = "teacher-workspace-encrypted-backup";
 export const ENCRYPTED_BACKUP_VERSION = 1;
 export const BACKUP_PASSPHRASE_MIN_LENGTH = 12;
 const KDF_ITERATIONS = 600_000;
-const MAX_CIPHERTEXT_BYTES = 14 * 1024 * 1024;
+export const MAX_ENCRYPTED_BACKUP_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_CIPHERTEXT_BYTES = 18 * 1024 * 1024;
 
 function bytesToBase64(bytes) {
   let binary = "";
@@ -13,12 +14,25 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-function base64ToBytes(value) {
-  if (typeof value !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
-    throw new Error("This encrypted backup is not valid.");
+function base64DecodedLength(value) {
+  if (typeof value !== "string" || !value.length || value.length % 4 !== 0) return -1;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const contentLength = value.length - padding;
+  for (let index = 0; index < contentLength; index += 1) {
+    const code = value.charCodeAt(index);
+    const alphaNumeric = (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 48 && code <= 57);
+    if (!alphaNumeric && code !== 43 && code !== 47) return -1;
   }
+  for (let index = contentLength; index < value.length; index += 1) if (value.charCodeAt(index) !== 61) return -1;
+  return value.length / 4 * 3 - padding;
+}
+
+function base64ToBytes(value) {
+  if (base64DecodedLength(value) < 0) throw new Error("This encrypted backup is not valid.");
   const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 function cryptoApi(cryptoProvider) {
@@ -61,8 +75,8 @@ export function validateEncryptedBackupEnvelope(value) {
   }
   const salt = base64ToBytes(value.salt);
   const iv = base64ToBytes(value.iv);
-  const ciphertext = base64ToBytes(value.ciphertext);
-  if (salt.length !== 16 || iv.length !== 12 || ciphertext.length < 16 || ciphertext.length > MAX_CIPHERTEXT_BYTES) {
+  const ciphertextLength = base64DecodedLength(value.ciphertext);
+  if (salt.length !== 16 || iv.length !== 12 || ciphertextLength < 16 || ciphertextLength > MAX_CIPHERTEXT_BYTES) {
     throw new Error("This encrypted backup is not valid or is too large.");
   }
   return { format: ENCRYPTED_BACKUP_FORMAT, backupVersion: ENCRYPTED_BACKUP_VERSION, encryption: "AES-256-GCM", keyDerivation: "PBKDF2-SHA-256", iterations: KDF_ITERATIONS, salt: value.salt, iv: value.iv, ciphertext: value.ciphertext };

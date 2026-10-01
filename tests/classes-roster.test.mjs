@@ -7,6 +7,7 @@ import {
   BACKUP_FORMAT,
   BACKUP_VERSION,
   LEGACY_BACKUP_VERSION,
+  PREVIOUS_BACKUP_VERSION,
   LOCAL_SCHEMA_VERSION,
   attendanceCounts,
   copyActiveRosterToEmptyClass,
@@ -16,6 +17,7 @@ import {
   deleteLessonPermanently,
   deleteClassPermanently,
   deleteMaterialPermanently,
+  deleteClassWorkPermanently,
   getAllRecords,
   listClasses,
   listAssessments,
@@ -23,6 +25,10 @@ import {
   listAttendanceForDate,
   listAttendanceHistory,
   listLessons,
+  listClassWork,
+  listWorkSubmissionsForClass,
+  listWorkSubmissionsForItem,
+  listWorkSubmissionsForStudent,
   listMaterials,
   listScores,
   listScoresForClass,
@@ -32,6 +38,7 @@ import {
   prepareScore,
   prepareStudent,
   prepareLesson,
+  prepareClassWork,
   replaceWithBackup,
   reviewRoster,
   saveAttendance,
@@ -39,6 +46,8 @@ import {
   saveAssessment,
   saveClass,
   saveLesson,
+  saveClassWork,
+  saveWorkSubmissions,
   saveScores,
   saveStudent,
   saveStudents,
@@ -65,14 +74,14 @@ class MemoryStore {
   put(value) { this.records.set(value.id ?? value.key, structuredClone(value)); }
   get(key) { return request(this.records.get(key)); }
   getAll() { this.getAllCalls += 1; return request([...this.records.values()].map((value) => structuredClone(value))); }
-  index(name) { const definition = this.indexes.find((item) => item.name === name); if (!definition) throw new Error(`Missing index ${name}`); return { getAll: (key) => { this.indexReads.push({ name, key }); return request([...this.records.values()].filter((record) => record[definition.keyPath] === key).map((value) => structuredClone(value))); } }; }
+  index(name) { const definition = this.indexes.find((item) => item.name === name); if (!definition) throw new Error(`Missing index ${name}`); return { getAll: (key) => { this.indexReads.push({ name, key }); const value = (record) => Array.isArray(definition.keyPath) ? definition.keyPath.map((path) => record[path]) : record[definition.keyPath]; const matches = (record) => { const indexed = value(record); return Array.isArray(indexed) && Array.isArray(key) ? indexed.length === key.length && indexed.every((part, index) => part === key[index]) : indexed === key; }; return request([...this.records.values()].filter(matches).map((entry) => structuredClone(entry))); } }; }
   getAllKeys() { return request([...this.records.keys()]); }
   delete(key) { this.records.delete(key); }
 }
 class MemoryTransaction {
-  constructor(db) { this.db = db; this._complete = null; }
+  constructor(db, mode) { this.db = db; this._complete = null; this._snapshot = mode === "readwrite" && db.snapshotAbortedTransactions ? new Map([...db.stores].map(([name, store]) => [name, new Map([...store.records].map(([key, value]) => [key, structuredClone(value)]))])) : null; }
   objectStore(name) { return this.db.stores.get(name); }
-  abort() { this._aborted = true; }
+  abort() { this._aborted = true; if (this._snapshot) for (const [name, records] of this._snapshot) this.db.stores.get(name).records = new Map(records); }
   set oncomplete(callback) { this._complete = callback; queueMicrotask(() => { if (!this._aborted) callback?.(); }); }
   set onerror(callback) { this._error = callback; }
   set onabort(callback) { this._abort = callback; }
@@ -80,7 +89,7 @@ class MemoryTransaction {
 class MemoryDatabase {
   constructor() { this.version = 0; this.stores = new Map(); this.transactions = []; this.objectStoreNames = { contains: (name) => this.stores.has(name) }; }
   createObjectStore(name) { const store = new MemoryStore(name); this.stores.set(name, store); return store; }
-  transaction(names, mode) { this.transactions.push({ names, mode }); return new MemoryTransaction(this); }
+  transaction(names, mode) { this.transactions.push({ names, mode }); return new MemoryTransaction(this, mode); }
   close() { this.closed = true; }
 }
 class MemoryIndexedDb {
@@ -223,10 +232,14 @@ test("permanent class deletion only cleans up records related to that class", as
   await saveAttendance(b.id, "2026-09-29", [{ studentId: studentB.id, status: "late" }], idb);
   await saveLesson({ title: "A lesson", learningGoal: "Practice" }, a.id, null, idb);
   await saveLesson({ title: "B lesson", learningGoal: "Review" }, b.id, null, idb);
+  const workA = await saveClassWork({ title: "A work", dueDate: "2026-09-30" }, a.id, null, idb);
+  const workB = await saveClassWork({ title: "B work", dueDate: "2026-09-30" }, b.id, null, idb);
+  await saveWorkSubmissions(a.id, workA.id, studentsA.map((student, index) => ({ studentId: student.id, status: index === 0 ? "submitted" : "" })), idb);
+  await saveWorkSubmissions(b.id, workB.id, [{ studentId: studentB.id, status: "missing" }], idb);
   await saveAuthoredQuestion({ questionType: "multiple-choice", prompt: "A question", points: "1", options: [{ text: "A1" }, { text: "A2" }] }, assessmentA.id, null, idb);
   for (const store of idb.db.stores.values()) { store.getAllCalls = 0; store.indexReads = []; }
   await deleteClassPermanently(a.id, idb);
-  for (const name of ["students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons"]) {
+  for (const name of ["students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "classWork", "workSubmissions"]) {
     const store = idb.db.stores.get(name);
     assert.equal(store.getAllCalls, 0, `${name} deletion should not scan unrelated class records`);
     assert.ok(store.indexReads.some((read) => read.name === "classId" && read.key === a.id), `${name} deletion should use the classId index`);
@@ -241,6 +254,70 @@ test("permanent class deletion only cleans up records related to that class", as
   assert.equal((await listScoresForClass(b.id, idb)).length, 1);
   assert.equal((await listLessons(a.id, idb)).length, 0);
   assert.equal((await listLessons(b.id, idb)).length, 1);
+  assert.equal((await listClassWork(a.id, idb)).length, 0);
+  assert.equal((await listClassWork(b.id, idb))[0].id, workB.id);
+  assert.equal((await listWorkSubmissionsForClass(a.id, idb)).length, 0);
+  assert.equal((await listWorkSubmissionsForClass(b.id, idb))[0].studentId, studentB.id);
+});
+
+test("failed permanent class deletion aborts all related deletes and preserves every class record", async () => {
+  const idb = new MemoryIndexedDb();
+  const target = await saveClass({ className: "Delete target" }, null, idb);
+  const other = await saveClass({ className: "Keep this class" }, null, idb);
+  const student = await saveStudent({ fullName: "Target student" }, target.id, null, idb);
+  const work = await saveClassWork({ title: "Target work", dueDate: "2026-09-30" }, target.id, null, idb);
+  await saveWorkSubmissions(target.id, work.id, [{ studentId: student.id, status: "submitted" }], idb);
+  const before = await createBackup(idb);
+  idb.db.snapshotAbortedTransactions = true;
+  const store = idb.db.stores.get("workSubmissions"), originalDelete = store.delete;
+  let injected = false;
+  store.delete = function (key) {
+    if (!injected) { injected = true; throw new Error("synthetic delete failure"); }
+    return originalDelete.call(this, key);
+  };
+
+  await assert.rejects(() => deleteClassPermanently(target.id, idb), /classroom information was not changed/i);
+  store.delete = originalDelete;
+
+  const after = await createBackup(idb);
+  assert.equal(injected, true);
+  assert.deepEqual(after.data, before.data, "aborting the readwrite transaction restores the class and every related store");
+  assert.deepEqual((await listClasses({}, idb)).map(({ id }) => id).sort(), [target.id, other.id].sort());
+  assert.equal((await listStudents(target.id, {}, idb)).length, 1);
+  assert.equal((await listWorkSubmissionsForClass(target.id, idb)).length, 1);
+});
+
+test("multi-record IndexedDB writes abort on synchronous storage failures", async () => {
+  const idb = new MemoryIndexedDb();
+  idb.db.snapshotAbortedTransactions = true;
+  const source = await saveClass({ className: "Atomic source" }, null, idb);
+  const target = await saveClass({ className: "Atomic target" }, null, idb);
+  const students = await saveStudents([{ fullName: "One" }, { fullName: "Two" }], source.id, idb);
+  const assessment = await saveAssessment({ title: "Atomic check", date: "2026-09-30", maximumScore: "10" }, source.id, null, idb);
+
+  const assertRollback = async (storeName, method, failOnCall, operation) => {
+    const before = (await createBackup(idb)).data;
+    const store = idb.db.stores.get(storeName), original = store[method];
+    let calls = 0;
+    store[method] = function (...args) {
+      calls += 1;
+      if (calls === failOnCall) throw new Error("synthetic synchronous write failure");
+      return original.apply(this, args);
+    };
+    try { await assert.rejects(operation, /classroom information was not changed/i); }
+    finally { store[method] = original; }
+    assert.equal(calls, failOnCall, `${storeName}.${method} failure was injected`);
+    assert.deepEqual((await createBackup(idb)).data, before, `${storeName}.${method} failure must leave all records unchanged`);
+  };
+
+  await assertRollback("students", "put", 2, () => saveStudents([{ fullName: "Three" }, { fullName: "Four" }], source.id, idb));
+  await assertRollback("scores", "put", 2, () => saveScores(assessment.id, [{ studentId: students[0].id, rawScore: "8.5" }, { studentId: students[1].id, rawScore: "0" }], idb));
+  await assertRollback("attendance", "put", 2, () => saveAttendance(source.id, "2026-09-30", [{ studentId: students[0].id, status: "late" }, { studentId: students[1].id, status: "absent" }], idb));
+
+  const question = await saveAuthoredQuestion({ questionType: "multiple-choice", prompt: "Choose one", points: "1", options: [{ text: "A" }, { text: "B" }] }, assessment.id, null, idb);
+  await assertRollback("questionOptions", "put", 1, () => saveAuthoredQuestion({ ...question, prompt: "Edited prompt", options: question.options.map((option) => ({ ...option, text: `${option.text}!` })) }, assessment.id, question.id, idb));
+  await assertRollback("questions", "put", 1, () => copyAuthoredAssessmentToClass(assessment.id, target.id, idb));
+  await assertRollback("questionOptions", "delete", 1, () => deleteQuestionPermanently(question.id, idb));
 });
 
 test("backup round trip preserves IDs and hostile-looking text as ordinary data", async () => {
@@ -252,10 +329,10 @@ test("backup round trip preserves IDs and hostile-looking text as ordinary data"
   assert.equal(backup.backupVersion, BACKUP_VERSION);
   const backupRead = source.db.transactions.at(-1);
   assert.equal(backupRead.mode, "readonly");
-  assert.deepEqual(backupRead.names, ["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "materials"]);
+  assert.deepEqual(backupRead.names, ["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "materials", "classWork", "workSubmissions"]);
   const restored = new MemoryIndexedDb();
   const output = await replaceWithBackup(JSON.parse(JSON.stringify(backup)), restored);
-  assert.deepEqual(output, { classCount: 1, studentCount: 1, attendanceCount: 0, assessmentCount: 0, scoreCount: 0, questionCount: 0, optionCount: 0, lessonCount: 0, materialCount: 0 });
+  assert.deepEqual(output, { classCount: 1, studentCount: 1, attendanceCount: 0, assessmentCount: 0, scoreCount: 0, questionCount: 0, optionCount: 0, lessonCount: 0, materialCount: 0, classWorkCount: 0, workSubmissionCount: 0 });
   const classes = await getAllRecords("classes", restored);
   const students = await getAllRecords("students", restored);
   assert.equal(classes[0].id, classroom.id);
@@ -276,7 +353,7 @@ test("backup validation rejects malformed, unsupported, duplicate, and orphaned 
 });
 
 test("current backups require every collection while legacy backups keep their historical optional collections", () => {
-  const stores = ["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "materials"];
+  const stores = ["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "materials", "classWork", "workSubmissions"];
   const complete = { format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: Object.fromEntries(stores.map((store) => [store, []])) };
   assert.equal(validateBackup(complete).data.materials.length, 0);
   for (const store of stores) {
@@ -286,6 +363,9 @@ test("current backups require every collection while legacy backups keep their h
   }
   const legacy = { format: BACKUP_FORMAT, backupVersion: LEGACY_BACKUP_VERSION, data: { classes: [], students: [] } };
   assert.equal(validateBackup(legacy).data.attendance.length, 0);
+  const previous = { format: BACKUP_FORMAT, backupVersion: PREVIOUS_BACKUP_VERSION, data: Object.fromEntries(stores.slice(0, -2).map((store) => [store, []])) };
+  assert.deepEqual(validateBackup(previous).data.classWork, [], "pre-Class Work current backups restore with empty submission records");
+  assert.throws(() => validateBackup({ ...previous, data: { ...previous.data, attendance: undefined } }), /unsupported data shape/);
 });
 
 test("invalid restore payloads are rejected before any database transaction can modify existing records", async () => {
@@ -734,4 +814,85 @@ test("Lesson Workspace keeps class-scoped plain-text plans editable, duplicable,
   const orphan = prepareLesson({ ...edited, id: "orphan-lesson", classId: "missing-class" }); assert.throws(() => validateBackup({ format: BACKUP_FORMAT, backupVersion: BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students, lessons: [orphan] } }), /lesson without a matching class/);
   await deleteLessonPermanently(copy.id, source); assert.equal((await listLessons(first.id, source)).length, 1); await setClassArchived(first.id, true, source); assert.equal((await listLessons(first.id, source)).length, 1); await setClassArchived(first.id, false, source); assert.equal((await listLessons(first.id, source)).length, 1); await deleteClassPermanently(first.id, source); assert.equal((await getAllRecords("lessons", source)).length, 0);
   const started = performance.now(); for (let index = 0; index < 100; index += 1) await saveLesson({ title: `Plan ${index}`, date: `2026-09-${String((index % 28) + 1).padStart(2, "0")}` }, second.id, null, source); assert.equal((await listLessons(second.id, source)).length, 100); assert.ok(performance.now() - started < 1000, "100 local lesson saves should remain responsive");
+});
+
+test("Class Work keeps submission facts independent from scores, class-scoped, editable, and archived-safe", async () => {
+  const idb = new MemoryIndexedDb(), a = await saveClass({ className: "Work · Science" }, null, idb), b = await saveClass({ className: "Work · English" }, null, idb);
+  const students = await saveStudents([{ fullName: "A Student" }, { fullName: "B Student" }, { fullName: "C Student" }], a.id, idb), other = await saveStudent({ fullName: "Other Class" }, b.id, null, idb);
+  const assessment = await saveAssessment({ title: "Unit Check", date: "2026-09-30", maximumScore: "10" }, a.id, null, idb);
+  const otherAssessment = await saveAssessment({ title: "Other check", date: "2026-09-30", maximumScore: "10" }, b.id, null, idb);
+  await saveScores(assessment.id, [{ studentId: students[0].id, rawScore: "0" }], idb);
+  const item = await saveClassWork({ title: "Unit Check submission", dueDate: "2026-09-30", assessmentId: assessment.id }, a.id, null, idb);
+  assert.match(item.id, /^classWork_/); assert.equal(item.dueDate, "2026-09-30");
+  assert.equal((await listClassWork(b.id, idb)).length, 0);
+  assert.equal((await listWorkSubmissionsForStudent(a.id, students[0].id, idb)).length, 0, "a saved zero score does not imply a submission state");
+  assert.throws(() => prepareClassWork({ title: "Bad date", dueDate: "2026-02-30" }, null), /valid attendance date/);
+  await assert.rejects(() => saveClassWork({ title: "Cross-class link", assessmentId: otherAssessment.id }, a.id, null, idb), /assessment from this class/);
+  await assert.rejects(() => saveClassWork({ ...item, title: "Moved" }, b.id, item.id, idb), /another class/);
+  const initial = await listWorkSubmissionsForItem(item.id, idb); assert.deepEqual(initial, []);
+  await saveWorkSubmissions(a.id, item.id, [
+    { studentId: students[0].id, status: "submitted" },
+    { studentId: students[1].id, status: "missing" },
+    { studentId: students[2].id, status: "excused" }
+  ], idb);
+  await setStudentArchived(students[1].id, true, idb);
+  const active = await listStudents(a.id, {}, idb);
+  const itemStatuses = await listWorkSubmissionsForItem(item.id, idb);
+  assert.deepEqual(itemStatuses.map(({ studentId, status }) => [studentId, status]).sort(), [[students[0].id, "submitted"], [students[1].id, "missing"], [students[2].id, "excused"]].sort());
+  await saveWorkSubmissions(a.id, item.id, active.map((student) => ({ studentId: student.id, status: student.id === students[0].id ? "submitted" : "" })), idb);
+  assert.equal((await listWorkSubmissionsForItem(item.id, idb)).some((entry) => entry.studentId === students[1].id && entry.status === "missing"), true, "archived historical status is not erased by active-roster saves");
+  await assert.rejects(() => saveWorkSubmissions(a.id, item.id, [...active.map((student) => ({ studentId: student.id, status: "submitted" })), { studentId: students[1].id, status: "missing" }], idb), /active students/);
+  await assert.rejects(() => saveWorkSubmissions(a.id, item.id, [{ studentId: students[0].id, status: "unknown" }, { studentId: students[2].id, status: "submitted" }], idb), /Choose Submitted/);
+  await assert.rejects(() => saveWorkSubmissions(b.id, item.id, [{ studentId: other.id, status: "submitted" }], idb), /no longer available/);
+  const byStudent = await listWorkSubmissionsForStudent(a.id, students[1].id, idb);
+  assert.equal(byStudent[0].status, "missing");
+  assert.ok(idb.db.stores.get("workSubmissions").indexReads.some((read) => read.name === "classStudent" && read.key[0] === a.id && read.key[1] === students[1].id));
+  const edited = await saveClassWork({ ...item, title: "Unit work · revised", dueDate: "" }, a.id, item.id, idb);
+  assert.equal(edited.id, item.id); assert.equal(edited.assessmentId, assessment.id); assert.equal(edited.dueDate, "");
+  const deletedAssessment = await deleteAssessmentPermanently(assessment.id, idb);
+  assert.equal(deletedAssessment.unlinkedWorkCount, 1);
+  assert.equal((await listClassWork(a.id, idb))[0].assessmentId, null);
+  assert.equal((await listWorkSubmissionsForStudent(a.id, students[0].id, idb)).length, 1, "assessment deletion leaves independent submission history intact");
+  await setClassArchived(a.id, true, idb);
+  await assert.rejects(() => saveWorkSubmissions(a.id, item.id, [], idb), /Restore this class/);
+  await assert.rejects(() => deleteClassWorkPermanently(item.id, idb), /Restore this class/);
+  await setClassArchived(a.id, false, idb);
+  await assert.rejects(() => saveWorkSubmissions(a.id, item.id, [], idb), /roster changed/);
+  const removed = await deleteClassWorkPermanently(item.id, idb);
+  assert.equal(removed.deletedWorkItemId, item.id);
+  assert.equal((await listWorkSubmissionsForItem(item.id, idb)).length, 0);
+});
+
+test("Class Work backup v3 round-trips while v2/legacy backups restore empty work tracking and malformed links fail closed", async () => {
+  const source = new MemoryIndexedDb(), classroom = await saveClass({ className: "Backup class" }, null, source), student = await saveStudent({ fullName: "<script>Formula" }, classroom.id, null, source), assessment = await saveAssessment({ title: "Linked check", date: "2026-09-30", maximumScore: "10" }, classroom.id, null, source), item = await saveClassWork({ title: "Submit: =1+1", dueDate: "2026-09-30", assessmentId: assessment.id }, classroom.id, null, source);
+  await saveWorkSubmissions(classroom.id, item.id, [{ studentId: student.id, status: "submitted" }], source);
+  const backup = await createBackup(source);
+  assert.equal(backup.backupVersion, BACKUP_VERSION);
+  assert.equal(backup.data.classWork.length, 1); assert.equal(backup.data.workSubmissions.length, 1);
+  const roundTrip = new MemoryIndexedDb(), restored = await replaceWithBackup(backup, roundTrip);
+  assert.equal(restored.classWorkCount, 1); assert.equal(restored.workSubmissionCount, 1);
+  assert.deepEqual((await listClassWork(classroom.id, roundTrip)).map(({ id, title, assessmentId }) => ({ id, title, assessmentId })), [{ id: item.id, title: item.title, assessmentId: assessment.id }]);
+  assert.equal((await listWorkSubmissionsForStudent(classroom.id, student.id, roundTrip))[0].status, "submitted");
+  const malformedLink = structuredClone(backup); malformedLink.data.classWork[0].assessmentId = "other-class-assessment"; assert.throws(() => validateBackup(malformedLink), /same-class assessment/);
+  const malformedSubmission = structuredClone(backup); malformedSubmission.data.workSubmissions[0].studentId = "orphan"; assert.throws(() => validateBackup(malformedSubmission), /matching class work, class, and student/);
+  const duplicateStatus = structuredClone(backup); duplicateStatus.data.workSubmissions.push({ ...duplicateStatus.data.workSubmissions[0], id: "second-status" }); assert.throws(() => validateBackup(duplicateStatus), /duplicate submission statuses/);
+  const previousData = Object.fromEntries(["classes", "students", "attendance", "assessments", "scores", "questions", "questionOptions", "lessons", "materials"].map((name) => [name, backup.data[name]]));
+  const previous = { format: BACKUP_FORMAT, backupVersion: PREVIOUS_BACKUP_VERSION, data: previousData }, oldTarget = new MemoryIndexedDb();
+  await replaceWithBackup(previous, oldTarget); assert.deepEqual(await listClassWork(classroom.id, oldTarget), []); assert.deepEqual(await listWorkSubmissionsForClass(classroom.id, oldTarget), []);
+  const legacy = { format: BACKUP_FORMAT, backupVersion: LEGACY_BACKUP_VERSION, data: { classes: backup.data.classes, students: backup.data.students } }, legacyTarget = new MemoryIndexedDb();
+  await replaceWithBackup(legacy, legacyTarget); assert.deepEqual(await listClassWork(classroom.id, legacyTarget), []);
+});
+
+test("Class Work scales through class and class-student indexes rather than whole-store reads", async () => {
+  const idb = new MemoryIndexedDb(), classes = [], studentsByClass = [];
+  for (let section = 0; section < 8; section += 1) { const classroom = await saveClass({ className: `Section ${section}` }, null, idb), students = await saveStudents(Array.from({ length: 40 }, (_, index) => ({ fullName: `S${section}-${String(index).padStart(2, "0")}` })), classroom.id, idb); classes.push(classroom); studentsByClass.push(students); }
+  for (let section = 0; section < classes.length; section += 1) for (let index = 0; index < 12; index += 1) { const item = await saveClassWork({ title: `Work ${index}`, dueDate: index % 2 ? "2026-09-30" : "" }, classes[section].id, null, idb); await saveWorkSubmissions(classes[section].id, item.id, studentsByClass[section].map((student, studentIndex) => ({ studentId: student.id, status: studentIndex < index ? "submitted" : "" })), idb); }
+  for (const store of idb.db.stores.values()) { store.getAllCalls = 0; store.indexReads = []; }
+  const started = performance.now(), work = await listClassWork(classes[5].id, idb), statuses = await listWorkSubmissionsForClass(classes[5].id, idb), oneStudent = await listWorkSubmissionsForStudent(classes[5].id, studentsByClass[5][3].id, idb);
+  assert.equal(work.length, 12); assert.equal(statuses.length, 66); assert.equal(oneStudent.length, 8);
+  assert.equal(idb.db.stores.get("classWork").getAllCalls, 0); assert.equal(idb.db.stores.get("workSubmissions").getAllCalls, 0);
+  assert.ok(idb.db.stores.get("classWork").indexReads.some((read) => read.name === "classId" && read.key === classes[5].id));
+  assert.ok(idb.db.stores.get("workSubmissions").indexReads.some((read) => read.name === "classId" && read.key === classes[5].id));
+  assert.ok(idb.db.stores.get("workSubmissions").indexReads.some((read) => read.name === "classStudent" && read.key[0] === classes[5].id));
+  assert.ok(performance.now() - started < 500, "class-work reads for a 40-student section remain responsive");
 });
