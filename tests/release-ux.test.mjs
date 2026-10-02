@@ -525,6 +525,32 @@ test("My Classes keeps its home composition compact and makes existing class inf
   assert.match(css, /\.dashboard-utilities \{ display: flex;/);
 });
 
+test("page titles share a calm responsive scale and an empty Class Work screen has one useful action", () => {
+  assert.match(css, /\.page-heading h1,[^\n]*\.report-heading h1, \.class-work-heading h1 \{ font-size: clamp\(2rem, 3\.2vw, 2\.45rem\)/);
+  assert.match(css, /\.page-heading h1,[^\n]*\.report-heading h1, \.class-work-heading h1 \{ font-size: clamp\(1\.85rem, 7vw, 2\.15rem\)/);
+  assert.match(css, /\.class-work-empty \{ max-width: 38rem; margin-top: \.5rem; padding: 1\.5rem;/);
+  const emptyList = app.match(/function classWorkSearchResults\(\)[\s\S]*?(?=function renderClassWorkWorkspace\()/)?.[0] || "";
+  const classWorkPage = app.match(/function renderClassWorkWorkspace\(\)[\s\S]*?(?=async function openClassWorkItem\()/)?.[0] || "";
+  assert.match(emptyList, /if \(!items\.length\)[\s\S]*?No class work yet/);
+  assert.doesNotMatch(emptyList, /action\("Add class work"/);
+  assert.match(classWorkPage, /state\.classWork\.length \? el\("label", \{ class: "field class-work-search"/);
+  assert.match(classWorkPage, /action\("Add class work", prepClassWork, "button"\)/);
+});
+
+test("V35 design tokens unify calm surfaces and keep class overview density responsive", () => {
+  assert.match(css, /--surface-muted: #f3f7f5/);
+  assert.match(css, /--line-strong: #bdcec9/);
+  assert.match(css, /--radius-control: 9px/);
+  assert.match(css, /--space-4: 1rem/);
+  assert.match(css, /:focus-visible \{ outline: 3px solid var\(--focus\);/);
+  assert.match(css, /font-variant-numeric: tabular-nums/);
+  assert.match(css, /\.workspace-tools-grid > section \{[^}]*min-height: 0;[^}]*box-shadow: none;/);
+  assert.match(css, /@media \(max-width: 900px\) \{\s*\.workspace-tools-grid \{ grid-template-columns: 1fr;/);
+  assert.match(css, /@media \(min-width: 1440px\) \{\s*\.workspace-tools-grid \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/);
+  assert.match(css, /\.workspace-tools-grid, \.today-grid \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /\.classroom-hero \{[^}]*background: #164d57;/);
+});
+
 test("strict same-origin CSP does not block startup recovery or the cached shell", () => {
   assert.match(headers, /script-src 'self'/);
   assert.ok(html.includes(`<script src="startup.js?v=${currentShellVersion}"></script>`));

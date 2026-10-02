@@ -306,7 +306,17 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.equal(await evaluate("document.querySelector('.today-card--lesson h3')?.textContent"), "Synthetic Lesson Plan", "Today must prefer the lesson dated today over the more recently edited future lesson");
     assert.match(await evaluate("document.querySelector('.today-card--lesson').innerText"), /Ready · Planned for today/);
 
+    for (const [width, height, expectedToolColumns, expectedTodayColumns] of [[1280, 900, 2, 2], [768, 1024, 1, 2], [390, 844, 1, 1], [320, 740, 1, 1], [1600, 1000, 3, 3]]) {
+      await setViewport(width, height);
+      const columns = await evaluate("(()=>{const count=selector=>getComputedStyle(document.querySelector(selector)).gridTemplateColumns.trim().split(/\\s+/).length;return {tools:count('.workspace-tools-grid'),today:count('.today-grid')}})()");
+      assert.deepEqual(columns, { tools: expectedToolColumns, today: expectedTodayColumns }, `Overview should use a readable ${expectedToolColumns}-column tools / ${expectedTodayColumns}-column Today layout at ${width}px`);
+    }
+    await setViewport(1280, 900);
+
     await nav("Class Work");
+    assert.equal(await evaluate("document.querySelectorAll('[data-class-work-search]').length"), 0, "search should wait until there are saved Class Work items");
+    assert.equal(await evaluate("[...document.querySelectorAll('button')].filter(button=>button.textContent.trim()==='Add class work').length"), 1, "empty Class Work should expose one primary Add action");
+    assert.doesNotMatch(await evaluate("document.querySelector('main').innerText"), /(?:^|\n)null(?:\n|$)/, "omitted empty-state controls must not render as visible null text");
     await clickButton("Add class work");
     await waitFor("document.querySelector('[data-dialog=class-work]')?.open", "new class-work dialog");
     await fill('[data-dialog="class-work"] input[name="title"]', "Synthetic Chapter 3 Worksheet");
