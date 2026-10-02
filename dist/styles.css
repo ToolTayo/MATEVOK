@@ -164,7 +164,7 @@ button, .button, .install-button, .text-button, .link-button { transition: backg
 .crumb strong { font-weight: 760; }
 .profile { width: 2rem; height: 2rem; background: #196775; font-size: .78rem; }
 .install-button, .text-button { min-height: 2.5rem; border-color: #c9dddd; border-radius: 9px; box-shadow: 0 1px 2px rgba(19,47,61,.04); }
-.main-content { width: min(100%, 78rem); padding: clamp(1.75rem, 4vw, 3.5rem) clamp(1.25rem, 4vw, 3.5rem) 3.25rem; }
+.main-content { width: min(100%, 82rem); padding: clamp(1.75rem, 4vw, 3.5rem) clamp(1.25rem, 4vw, 3.5rem) 3.25rem; }
 .storage-strip { margin-bottom: 1.15rem; color: #62767a; }
 .site-footer { padding-top: 1.1rem; padding-bottom: 1.1rem; }
 
@@ -212,18 +212,6 @@ h1, h2, h3, p { text-wrap: pretty; }
 .roster-list li { min-height: 3.35rem; border-bottom-color: #e5edeb; }
 .roster-actions { gap: .55rem; }
 .archived-students { background: #f4f7f6; border: 1px solid #e1e9e6; }
-.workspace-tools { margin-top: 2.5rem; }
-.workspace-tools-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin: 0 0 .9rem; }
-.workspace-tools-heading h2 { margin: 0; font-size: 1.35rem; letter-spacing: -.025em; }
-.workspace-tools-heading p:not(.eyebrow) { margin: .25rem 0 0; color: var(--muted); font-size: .88rem; }
-.workspace-tools-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
-.workspace-tools-grid > section { min-width: 0; min-height: 0; margin: 0; padding: 1.1rem; background: #fff; border: 1px solid var(--line); border-top: 2px solid #7bb6ad; border-radius: var(--radius-card); box-shadow: none; }
-.workspace-tools-grid > [data-class-tool] { scroll-margin-top: 5.5rem; }
-.workspace-tools-grid > .gradebook-overview, .workspace-tools-grid > .assessment-center-overview, .workspace-tools-grid > .lesson-overview, .workspace-tools-grid > .classroom-overview, .workspace-tools-grid > .progress-overview, .workspace-tools-grid > .reports-overview { border-top-color: #d5e4df; }
-.workspace-tools-grid .panel-heading { min-height: 0; padding-bottom: .8rem; border-bottom-color: #ebf0ed; }
-.workspace-tools-grid .panel-heading .button { align-self: flex-start; }
-.workspace-tools-grid .subtle, .workspace-tools-grid .policy-note, .workspace-tools-grid .gradebook-summary { margin: .65rem 0 0; font-size: .8rem; line-height: 1.45; }
-.workspace-tools-grid .policy-note { padding: .55rem .65rem; border-radius: 8px; }
 .lesson-card small, .lesson-overview-fields small, .lesson-field small { color: #536b71; font-size: .78rem; }
 .lesson-status { font-size: .76rem; font-weight: 760; }
 
@@ -239,6 +227,11 @@ h1, h2, h3, p { text-wrap: pretty; }
 .today-card-action { margin-top: auto; }
 .today-card .button { min-height: 2.75rem; }
 .today-workspace .backup-recency { max-width: none; margin: .8rem 0 0; }
+.class-attendance-history { margin: 1rem 0 0; padding: 0 .95rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); }
+.class-attendance-history > summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; color: #31575e; font-size: .87rem; font-weight: 720; }
+.class-attendance-history[open] { padding-bottom: .85rem; }
+.class-attendance-history .attendance-history { margin-top: .25rem; }
+@media (max-width: 700px) { .class-attendance-history .link-button { min-height: 44px; } }
 
 /* Information-dense work screens */
 .attendance-screen, .gradebook-screen, .authoring-screen { gap: var(--space-3); }
@@ -316,15 +309,11 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
 .display-message { border-radius: 12px; }
 
 @media (max-width: 900px) {
-  .workspace-tools-grid { grid-template-columns: 1fr; }
-  .workspace-tools-grid > section { min-height: 0; }
-  .workspace-tools-grid .panel-heading { min-height: 0; }
   .today-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .today-card { min-height: 0; }
 }
 
 @media (min-width: 1440px) {
-  .workspace-tools-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .today-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
@@ -348,12 +337,7 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
   .roster-panel { padding: 1rem; }
   .panel-heading .heading-actions { width: 100%; }
   .panel-heading .heading-actions .button { flex: 1 1 auto; }
-  .workspace-tools { margin-top: 1.8rem; }
-  .workspace-tools-heading { align-items: flex-start; }
-  .workspace-tools-grid, .today-grid { grid-template-columns: 1fr; }
-  .workspace-tools-grid { gap: .7rem; }
-  .workspace-tools-grid > section { padding: 1rem; }
-  .workspace-tools-grid .panel-heading .button { width: 100%; }
+  .today-grid { grid-template-columns: 1fr; }
   .attendance-tools, .authoring-actions, .report-filters { border-radius: var(--radius-card); }
   .attendance-list > li, .score-list > li { padding: .75rem .7rem; }
   .status-button, .count-filter, .score-input, .attendance-date input, .field input, .field select { min-height: 2.75rem; }
@@ -386,7 +370,7 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
 }
 
 @media print {
-  .workspace-tools, .roster-panel, .class-hero, .page-heading, .crumb-nav { box-shadow: none !important; }
+  .roster-panel, .class-hero, .page-heading, .crumb-nav { box-shadow: none !important; }
   .report-table tbody tr:nth-child(even) { background: transparent; }
 }
 
@@ -495,7 +479,6 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
 .material-card-details { margin: 0 0 1rem; color: var(--muted); font-size: .9rem; line-height: 1.5; }
 .material-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-top: auto; padding-top: .35rem; }
 .library-empty { margin-top: .5rem; }
-.workspace-tools-heading { align-items: center; }
 
 @media (max-width: 700px) {
   .materials-heading { display: grid; grid-template-columns: 1fr; gap: .85rem; }
@@ -505,8 +488,6 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
   .material-card { min-height: 0; }
   .material-card-actions { display: grid; grid-template-columns: 1fr; }
   .material-card-actions .button { width: 100%; min-height: 44px; }
-  .workspace-tools-heading { align-items: flex-start; flex-direction: column; }
-  .workspace-tools-heading > .button { width: 100%; min-height: 44px; }
 }
 
 .attendance-save--mobile { display: none; }
@@ -610,8 +591,14 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
 .class-work-save--mobile { display: none; }
 .class-work-empty { max-width: 38rem; margin-top: .5rem; padding: 1.5rem; border-color: #dce8e5; box-shadow: none; }
 .class-work-report-note { margin: .2rem 0 1rem; color: #496269; font-size: .88rem; }
+.attendance-empty-state { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0; padding: 1.2rem 1.25rem; background: var(--surface-muted); border: 1px solid var(--line); border-radius: var(--radius-card); }
+.attendance-empty-state h2 { margin: 0; font-size: 1.1rem; }
+.attendance-empty-state p { margin: .25rem 0 0; color: var(--muted); }
+.attendance-empty-state .button { min-height: 2.75rem; }
 @media (max-width: 700px) {
   .class-work-heading { align-items: stretch; flex-direction: column; }
+  .attendance-empty-state { align-items: stretch; flex-direction: column; }
+  .attendance-empty-state .button { width: 100%; }
   .class-work-heading > .button { width: 100%; min-height: 44px; }
   .class-work-card { grid-template-columns: minmax(0, 1fr); gap: .7rem; }
   .class-work-card-actions { justify-content: stretch; }

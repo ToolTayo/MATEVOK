@@ -117,9 +117,9 @@ test("class workspaces keep the roster first and make the current tool visible i
   assert.match(html, /data-nav-item="Attendance"/);
   assert.match(html, /Inside a class/);
   assert.match(app, /document\.querySelectorAll\("\[data-nav-item\]"\)/);
-  assert.match(app, /root\.append\(todayWorkspace\(current\), roster, tools\)/);
+  assert.match(app, /root\.append\(todayWorkspace\(current\), roster\)/);
   assert.match(app, /function renderAuthoring\(\).*setWorkspaceLocation\("Assessment Center"\)/s);
-  assert.match(css, /\.workspace-tools-grid \{ display: grid;/);
+  assert.match(css, /\.today-grid \{ display: grid;/);
   assert.match(css, /\.nav-item\.is-current, \.nav-item\[data-current\]/);
   assert.match(css, /\.report-table-wrap--compact \.report-table \{ min-width: 0;/);
   assert.match(css, /html, body \{ max-width: 100%; overflow-x: clip;/);
@@ -165,7 +165,8 @@ test("long active rosters expose an accessible in-place lookup for corrections",
 test("Gradebook wording describes its real scores-and-assessments workflow", () => {
   assert.doesNotMatch(app, /Smart gradebook/);
   assert.match(app, /text: "Scores & assessments"/);
-  assert.match(app, /generic mathematics, not official grades or a DepEd calculation/);
+  assert.match(app, /function renderGradebook\(\)[\s\S]*?Only \$\{GENERIC_RAW_POLICY\.name\.toLowerCase\(\)\} is available\. No DepEd grading configuration is selected or applied/);
+  assert.match(app, /Raw percentage only\.[\s\S]*?they are not official grades/);
 });
 
 test("long Gradebooks can find an assessment and filter saved score completeness within the active class", () => {
@@ -252,8 +253,9 @@ test("Classroom Mode exposes balanced group-count and maximum-size workflows in 
 test("empty-roster Today cards direct teachers to add students, then retain the normal actions", () => {
   const attendance = app.match(/function todayAttendanceCard\(current\)[\s\S]*?(?=function todayScoresCard\(current\))/)?.[0] || "";
   const scores = app.match(/function todayScoresCard\(current\)[\s\S]*?(?=function todayLessonCard\(current\))/)?.[0] || "";
-  assert.match(app, /function todayAddStudentsAction\(\) \{ return action\("Add students", \(\) => \{ const heading = root\.querySelector\("#roster-heading"\); heading\?\.scrollIntoView\(\{ block: "center" \}\); heading\?\.focus\(\{ preventScroll: true \}\); \}, "button"\); \}/);
-  assert.doesNotMatch(app.match(/function todayAddStudentsAction\(\)[^\n]*/)?.[0] || "", /prepStudent\(/);
+  assert.match(app, /function focusRosterHeading\(\) \{ const heading = root\.querySelector\("#roster-heading"\); heading\?\.scrollIntoView\(\{ block: "center" \}\); heading\?\.focus\(\{ preventScroll: true \}\); \}/);
+  assert.match(app, /function openClassRoster\(\) \{ renderClass\(\); focusRosterHeading\(\); \}/);
+  assert.match(app, /function todayAddStudentsAction\(\) \{ return action\("Add students", focusRosterHeading, "button"\); \}/);
   assert.match(attendance, /if \(!state\.students\.length\) return todayCard\("Attendance", "Add students before taking attendance\.", todayAddStudentsAction\(\)\)/);
   assert.match(attendance, /saved \? "Reopen today" : "Take attendance"/);
   assert.match(scores, /if \(!activeCount\) return todayCard\("Scores", "Add students before entering scores\.", todayAddStudentsAction\(\)\)/);
@@ -306,7 +308,8 @@ test("class-scoped navigation resolves an active class instead of disabling teac
   assert.match(html, /data-class-tool-choices/);
   assert.match(app, /function requestScoreExit\(next\)/);
   assert.match(html, /data-dialog="leave-scores"/);
-  assert.match(app, /data-class-tool": "Reports"/);
+  assert.match(html, /data-nav-item="Reports"/);
+  assert.match(app, /function openReports\(\)/);
   assert.doesNotMatch(css, /content: "Go"/);
   assert.match(css, /grid-template-columns: 1\.35rem minmax\(0, 1fr\);/);
 });
@@ -544,11 +547,41 @@ test("V35 design tokens unify calm surfaces and keep class overview density resp
   assert.match(css, /--space-4: 1rem/);
   assert.match(css, /:focus-visible \{ outline: 3px solid var\(--focus\);/);
   assert.match(css, /font-variant-numeric: tabular-nums/);
-  assert.match(css, /\.workspace-tools-grid > section \{[^}]*min-height: 0;[^}]*box-shadow: none;/);
-  assert.match(css, /@media \(max-width: 900px\) \{\s*\.workspace-tools-grid \{ grid-template-columns: 1fr;/);
-  assert.match(css, /@media \(min-width: 1440px\) \{\s*\.workspace-tools-grid \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/);
-  assert.match(css, /\.workspace-tools-grid, \.today-grid \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /@media \(max-width: 900px\) \{\s*\.today-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(css, /@media \(min-width: 1440px\) \{\s*\.today-grid \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/);
+  assert.match(css, /\.today-grid \{ grid-template-columns: 1fr; \}/);
   assert.match(css, /\.classroom-hero \{[^}]*background: #164d57;/);
+});
+
+test("Class Overview shows current-class work and roster without duplicating sidebar destinations", () => {
+  const renderClass = app.match(/function renderClass\(\)[\s\S]*?(?=function renderRosterCopyReview\()/)?.[0] || "";
+  assert.match(renderClass, /root\.append\(todayWorkspace\(current\), roster\)/);
+  assert.match(renderClass, /classAttendanceHistory\(\)/);
+  assert.doesNotMatch(renderClass, /Choose the next task|workspace-tools-grid|attendanceOverview|gradebookOverview|classWorkOverview|progressOverview|reportsOverview|Add from My Materials/);
+  assert.match(app, /function todayWorkspace\(current\)[\s\S]*?todayAttendanceCard\(current\)[\s\S]*?todayScoresCard\(current\)[\s\S]*?todayLessonCard\(current\)[\s\S]*?todayClassroomCard\(current\)[\s\S]*?todayClassWorkCard\(current\)[\s\S]*?backupReminder\(\)/);
+  assert.match(app, /function classAttendanceHistory\(\)[\s\S]*?attendanceHistoryPanel\(\)/);
+  assert.match(css, /\.class-attendance-history > summary \{[^}]*min-height: 44px;/);
+  assert.match(css, /\.class-attendance-history \.link-button \{ min-height: 44px; \}/);
+  for (const destination of ["Overview", "Attendance", "Class Work", "Gradebook", "Assessment Center", "Lesson Workspace", "Classroom Mode", "Student Progress", "Reports", "My Materials"]) assert.ok(html.includes(`data-nav-item="${destination}"`), `${destination} remains available in navigation`);
+  assert.doesNotMatch(css, /workspace-tools/);
+});
+
+test("class module headings separate module names from class context and empty Attendance offers one roster path", () => {
+  const attendance = app.match(/function renderAttendance\(\)[\s\S]*?(?=function visibleAttendanceRows\()/)?.[0] || "";
+  const lessons = app.match(/function renderLessonWorkspace\(\)[\s\S]*?(?=function renderLessonEditor\()/)?.[0] || "";
+  assert.match(attendance, /h1", \{ text: "Attendance" \}/);
+  assert.match(attendance, /`← \$\{current\.className\}`/);
+  assert.doesNotMatch(attendance, /h1", \{ text: current\.className \}/);
+  assert.match(attendance, /class: "attendance-empty-state"/);
+  assert.match(attendance, /No students in this class yet/);
+  assert.match(attendance, /Add students to the class roster before taking attendance\./);
+  assert.match(attendance, /action\("Add students", openClassRoster, "button"\)/);
+  assert.doesNotMatch(attendance, /Add students to begin|Add an active student in Overview before taking attendance/);
+  assert.match(lessons, /`← \$\{current\.className\}`/);
+  assert.match(lessons, /h1", \{ text: "Lessons" \}/);
+  assert.doesNotMatch(lessons, /h1", \{ text: current\.className \}/);
+  assert.match(css, /\.main-content \{ width: min\(100%, 82rem\);/);
+  assert.match(css, /\.attendance-empty-state \.button \{ min-height: 2\.75rem; \}/);
 });
 
 test("strict same-origin CSP does not block startup recovery or the cached shell", () => {

@@ -259,6 +259,27 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     await fill('[data-dialog="class"] [name="schedule"]', "Mon/Wed · 8:00 AM");
     await evaluate("document.querySelector('[data-dialog=class] form').requestSubmit()");
     await waitFor("document.querySelector('.roster-panel h2')?.textContent.includes('Students · 0')", "new class workspace");
+    const newClassOverview = await evaluate("(()=>({directory:!!document.querySelector('.workspace-tools,.workspace-tools-grid'),roster:document.querySelector('.roster-panel h2')?.textContent,emptyGuidance:document.querySelector('.roster-empty')?.innerText,today:!!document.querySelector('.today-workspace'),nav:[...document.querySelectorAll('.primary-nav [data-nav-item]')].map(item=>item.dataset.navItem)}))()");
+    assert.equal(newClassOverview.directory, false, "a new class should not show the duplicate tool directory");
+    assert.equal(newClassOverview.roster, "Students · 0");
+    assert.match(newClassOverview.emptyGuidance, /Add a student or paste a roster/);
+    assert.equal(newClassOverview.today, true);
+    assert.deepEqual(newClassOverview.nav, ["My Classes", "My Materials", "Overview", "Attendance", "Class Work", "Gradebook", "Assessment Center", "Lesson Workspace", "Classroom Mode", "Student Progress", "Reports"]);
+    await nav("Attendance");
+    await waitFor("document.querySelector('[data-attendance-empty-state]')", "empty-roster Attendance guidance");
+    await setViewport(390, 844);
+    const emptyAttendance = await evaluate("(()=>{const action=document.querySelector('[data-attendance-empty-state] .button'),box=action?.getBoundingClientRect();return {heading:document.querySelector('.attendance-heading h1')?.textContent,classContext:document.querySelector('.crumb-nav')?.innerText,emptyTitle:document.querySelector('[data-attendance-empty-state] h2')?.textContent,copy:document.querySelector('[data-attendance-empty-state] p')?.textContent,action:action?.textContent.trim(),actionHeight:box?.height,overflow:document.documentElement.scrollWidth>innerWidth,hasStatusControls:!!document.querySelector('.attendance-tools,.attendance-counts,.attendance-list,[data-attendance-save-state]'),detachedPrompt:document.querySelector('.attendance-heading .save-state')?.textContent}})()");
+    assert.equal(emptyAttendance.heading, "Attendance");
+    assert.match(emptyAttendance.classContext, /Synthetic Release QA/);
+    assert.equal(emptyAttendance.emptyTitle, "No students in this class yet");
+    assert.match(emptyAttendance.copy, /Add students to the class roster/);
+    assert.equal(emptyAttendance.action, "Add students");
+    assert.ok(emptyAttendance.actionHeight >= 44, "empty Attendance roster action is too small on mobile");
+    assert.equal(emptyAttendance.overflow, false, "empty Attendance state overflows the phone viewport");
+    assert.equal(emptyAttendance.hasStatusControls, false, "empty Attendance should not show controls for nonexistent students");
+    assert.equal(emptyAttendance.detachedPrompt, undefined, "empty Attendance should not show a detached Add students status");
+    await clickButton("Add students");
+    await waitFor("document.activeElement?.id==='roster-heading'", "focused class roster after empty Attendance action");
     await clickButton("Paste roster");
     await waitFor("document.querySelector('[data-dialog=bulk]')?.open", "bulk roster dialog");
     const names = Array.from({ length: 40 }, (_, index) => `Synthetic Student ${String(index + 1).padStart(2, "0")}`);
@@ -301,15 +322,37 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     await waitFor("document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "reload with synthetic data");
     await evaluate(`(()=>{const card=[...document.querySelectorAll('.class-card')].find(x=>x.querySelector('h2')?.textContent==='Synthetic Release QA');if(!card)throw new Error('Synthetic class missing after reload');card.querySelector('button').click();return true})()`);
     await waitFor("document.querySelector('.today-workspace')", "Today Overview");
+    const overview = await evaluate("(()=>({directory:!!document.querySelector('.workspace-tools,.workspace-tools-grid'),duplicateTaskHeading:[...document.querySelectorAll('h1,h2')].some(h=>h.textContent.trim()==='Choose the next task'),roster:document.querySelector('.roster-panel h2')?.textContent,today:!!document.querySelector('.today-workspace'),history:document.querySelector('.class-attendance-history')?.innerText||'',nav:[...document.querySelectorAll('.primary-nav [data-nav-item]')].map(item=>item.dataset.navItem)}))()");
+    assert.equal(overview.directory, false, "Overview should not duplicate the sidebar tool directory");
+    assert.equal(overview.duplicateTaskHeading, false);
+    assert.equal(overview.roster, "Students · 40", "a populated class should keep its canonical active roster");
+    assert.equal(overview.today, true, "factual Today actions should remain");
+    assert.deepEqual(overview.nav, ["My Classes", "My Materials", "Overview", "Attendance", "Class Work", "Gradebook", "Assessment Center", "Lesson Workspace", "Classroom Mode", "Student Progress", "Reports"], "all class tools should remain discoverable in the sidebar");
     assert.match(await evaluate("document.querySelector('.today-workspace').innerText"), /2 of 40 active scores entered/);
     assert.match(await evaluate("document.querySelector('.today-workspace').innerText"), /Present 38 · Absent 1 · Late 1 · Excused 0/);
     assert.equal(await evaluate("document.querySelector('.today-card--lesson h3')?.textContent"), "Synthetic Lesson Plan", "Today must prefer the lesson dated today over the more recently edited future lesson");
     assert.match(await evaluate("document.querySelector('.today-card--lesson').innerText"), /Ready · Planned for today/);
+    const overviewHistory = await evaluate("(()=>({summary:document.querySelector('.class-attendance-history summary')?.textContent,reopen:document.querySelector('.class-attendance-history button')?.textContent,collapsed:!document.querySelector('.class-attendance-history')?.open,backup:!!document.querySelector('.today-workspace .backup-recency')}))()");
+    assert.match(overviewHistory.summary, /Attendance history · 1 saved date/);
+    assert.equal(overviewHistory.reopen, "Reopen", "unique attendance-history correction path should remain available");
+    assert.equal(overviewHistory.collapsed, true, "history should not lengthen the default Overview");
+    assert.equal(overviewHistory.backup, true, "backup reminder should remain with Today");
 
-    for (const [width, height, expectedToolColumns, expectedTodayColumns] of [[1280, 900, 2, 2], [768, 1024, 1, 2], [390, 844, 1, 1], [320, 740, 1, 1], [1600, 1000, 3, 3]]) {
+    for (const [width, height, expectedTodayColumns] of [[1280, 900, 2], [768, 1024, 2], [390, 844, 1], [320, 740, 1], [1600, 1000, 3]]) {
       await setViewport(width, height);
-      const columns = await evaluate("(()=>{const count=selector=>getComputedStyle(document.querySelector(selector)).gridTemplateColumns.trim().split(/\\s+/).length;return {tools:count('.workspace-tools-grid'),today:count('.today-grid')}})()");
-      assert.deepEqual(columns, { tools: expectedToolColumns, today: expectedTodayColumns }, `Overview should use a readable ${expectedToolColumns}-column tools / ${expectedTodayColumns}-column Today layout at ${width}px`);
+      const composition = await evaluate("(()=>{const history=document.querySelector('.class-attendance-history'),wasOpen=history?.open;if(history)history.open=true;const result={todayColumns:getComputedStyle(document.querySelector('.today-grid')).gridTemplateColumns.trim().split(/\\s+/).length,toolDirectory:!!document.querySelector('.workspace-tools-grid'),overflow:document.documentElement.scrollWidth>innerWidth,historySummaryHeight:history?.querySelector('summary')?.getBoundingClientRect().height,historyReopenHeight:history?.querySelector('.link-button')?.getBoundingClientRect().height};if(history)history.open=wasOpen;return result})()");
+      assert.equal(composition.todayColumns, expectedTodayColumns, `Today should use a readable ${expectedTodayColumns}-column layout at ${width}px`);
+      assert.equal(composition.toolDirectory, false, `duplicate tool directory reappeared at ${width}px`);
+      assert.equal(composition.overflow, false, `Overview overflows horizontally at ${width}px`);
+      if (width <= 700) {
+        assert.ok(composition.historySummaryHeight >= 44, "attendance-history disclosure target is too small on mobile");
+        assert.ok(composition.historyReopenHeight >= 44, "attendance-history Reopen target is too small on mobile");
+      }
+    }
+    for (const [width, height] of [[1600, 1000], [1700, 1000]]) {
+      await setViewport(width, height);
+      const wideWorkspaceWidth = await evaluate("document.querySelector('.main-content').getBoundingClientRect().width");
+      assert.ok(wideWorkspaceWidth > 1248 && wideWorkspaceWidth <= 1312, `wide desktop workspace should use the modest 82rem cap at ${width}px, got ${wideWorkspaceWidth}px`);
     }
     await setViewport(1280, 900);
 
@@ -453,6 +496,9 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.equal(await evaluate("document.documentElement.scrollWidth<=innerWidth"), true, "roster lookup overflows the phone viewport");
     await nav("Attendance");
     await waitFor("document.querySelectorAll('[data-attendance-row]').length===40", "40-row attendance workspace");
+    const attendanceContext = await evaluate("({heading:document.querySelector('.attendance-heading h1')?.textContent,classContext:document.querySelector('.crumb-nav')?.innerText})");
+    assert.equal(attendanceContext.heading, "Attendance");
+    assert.match(attendanceContext.classContext, /Synthetic Release QA/);
     const attendanceLookup = await evaluate(`(()=>{const input=document.querySelector('[data-attendance-search]');if(!input)throw new Error('long-roster attendance lookup missing');input.focus();input.value='synthetic student 39';input.setSelectionRange(input.value.length,input.value.length);input.dispatchEvent(new Event('input',{bubbles:true}));const row=document.querySelector('[data-attendance-row]');return {focused:document.activeElement===input,caret:input.selectionStart,rows:document.querySelectorAll('[data-attendance-row]').length,name:row?.querySelector('strong')?.textContent,count:document.querySelector('[data-attendance-search-count]')?.textContent,height:input.getBoundingClientRect().height}})()`);
     assert.equal(attendanceLookup.focused, true, "attendance lookup must preserve input focus while filtering");
     assert.equal(attendanceLookup.caret, "synthetic student 39".length);
@@ -567,6 +613,9 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     await waitFor("document.querySelector('.assessment-list')", "Assessment Center");
     assert.match(await evaluate("document.querySelector('[data-app]').innerText"), /Synthetic Weekly Check/);
     await nav("Lesson Workspace");
+    const lessonContext = await evaluate("({heading:document.querySelector('.lesson-workspace-heading h1')?.textContent,classContext:document.querySelector('.crumb-nav')?.innerText})");
+    assert.equal(lessonContext.heading, "Lessons");
+    assert.match(lessonContext.classContext, /Synthetic Release QA/);
     await waitFor("document.querySelector('[data-lesson-results]')", "Lesson Workspace");
     assert.match(await evaluate("document.querySelector('[data-app]').innerText"), /Synthetic Lesson Plan/);
     const lessonLookup = await evaluate(`(()=>{const input=document.querySelector('.lesson-list-tools input[type=search]');if(!input)throw new Error('Lesson search missing');input.focus();input.value='sYnThEtIc LeSsOn PlAn';input.setSelectionRange(input.value.length,input.value.length);input.dispatchEvent(new Event('input',{bubbles:true}));const result={focused:document.activeElement===input,caret:input.selectionStart,visible:document.querySelectorAll('[data-lesson-results] .lesson-card').length,title:document.querySelector('[data-lesson-results] .lesson-card h2')?.textContent};input.value='No Such Lesson';input.dispatchEvent(new Event('input',{bubbles:true}));result.noMatch= document.querySelector('[data-lesson-results] .lesson-empty h2')?.textContent;result.noMatchText=document.querySelector('[data-lesson-results] .lesson-empty p')?.textContent;input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));result.cleared=document.querySelectorAll('[data-lesson-results] .lesson-card').length;return result})()`);
