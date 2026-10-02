@@ -9,6 +9,7 @@ const cached = new Map();
 const deleted = [];
 const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
 const serviceWorkerSource = await readFile(join(distDirectory, "sw.js"), "utf8");
+const applicationSource = await readFile(join(distDirectory, "app.js"), "utf8");
 const currentShellVersion = Number(serviceWorkerSource.match(/^const CACHE_NAME = "teacher-workspace-shell-v(\d+)";$/m)?.[1]);
 assert.ok(Number.isInteger(currentShellVersion), "service worker must declare one numeric shell version");
 const currentCacheName = `teacher-workspace-shell-v${currentShellVersion}`;
@@ -49,6 +50,11 @@ test("precache covers every local static dependency of the cold-start scripts", 
   assert.ok(htmlScripts.includes(`startup.js?v=${currentShellVersion}`), "HTML startup script must match the active service-worker version");
   assert.ok(htmlScripts.includes(`app.js?v=${currentShellVersion}`), "HTML application script must match the active service-worker version");
   assert.ok(startup.includes(`./sw.js?v=${currentShellVersion}`), "service-worker registration must match the active shell version");
+  const takeoverProtocol = applicationSource.match(/async function reloadPeerWindowsForTakeover\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
+  assert.match(takeoverProtocol, /navigator\.serviceWorker\?\.controller/);
+  assert.match(takeoverProtocol, /MATEVOK_RELOAD_PEERS_FOR_TAKEOVER/);
+  assert.doesNotMatch(takeoverProtocol, /scriptURL|searchParams|["']v["']/,
+    "takeover support is verified by the worker's protocol response, not a duplicated shell-version constant");
   assert.ok(shellSource.includes(`./startup.js?v=${currentShellVersion}`), "precache startup URL must match the active shell version");
   assert.ok(shellSource.includes(`./app.js?v=${currentShellVersion}`), "precache app URL must match the active shell version");
   assert.equal((serviceWorkerSource.match(/teacher-workspace-shell-v\d+/g) || []).length, 1, "only CACHE_NAME should define the current shell version");

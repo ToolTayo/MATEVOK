@@ -496,11 +496,13 @@ test("backup export encrypts files and restore checks encrypted or legacy input 
   assert.match(app, /showBackupRestoreReview\(parsed, false\)/);
   assert.match(app, /finally \{ input\.value = ""; \}/);
   assert.match(app, /window\.setTimeout\(\(\) => \{ link\.remove\(\); URL\.revokeObjectURL\(url\); \}, 1000\)/);
-  assert.match(app, /36 MB import limit/);
-  assert.match(app, /backup file smaller than 36 MB/);
+  assert.match(app, /52 MB import limit/);
+  assert.match(app, /backup file no larger than 52 MB/);
+  assert.match(app, /validateEncryptedBackupFileSize\(file\.size\); const parsed = JSON\.parse\(await file\.text\(\)\)/,
+    "file size must be checked before reading or parsing the selected file");
   assert.match(app, /data-restore-security-note/);
   assert.match(html, /role="status" aria-live="polite" data-restore-progress/);
-  assert.match(app, /Restoring this backup… Keep this window open. Larger backups may take a little while./);
+  assert.match(app, /Restoring this backup… Keep this window open. A large school-year backup can take a minute or more./);
   assert.match(app, /dialogs.restore.addEventListener\("cancel", \(event\) => \{ if \(pendingForms.has\(dialogs.restore.querySelector\("form"\)\)\)/);
   assert.match(app, /Security warning: this older backup is unencrypted/);
   const restoreSubmit = app.slice(app.indexOf('dialogs.restore.querySelector("form").addEventListener("submit"'));

@@ -2,8 +2,15 @@ export const ENCRYPTED_BACKUP_FORMAT = "teacher-workspace-encrypted-backup";
 export const ENCRYPTED_BACKUP_VERSION = 1;
 export const BACKUP_PASSPHRASE_MIN_LENGTH = 12;
 const KDF_ITERATIONS = 600_000;
-export const MAX_ENCRYPTED_BACKUP_FILE_BYTES = 36_000_000;
-const MAX_CIPHERTEXT_BYTES = 24 * 1024 * 1024;
+export const MAX_ENCRYPTED_BACKUP_FILE_BYTES = 52_000_000;
+const MAX_CIPHERTEXT_BYTES = 36 * 1024 * 1024;
+
+export function validateEncryptedBackupFileSize(size) {
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_ENCRYPTED_BACKUP_FILE_BYTES) {
+    throw new Error("Choose a backup file no larger than 52 MB.");
+  }
+  return size;
+}
 
 function bytesToBase64(bytes) {
   let binary = "";
