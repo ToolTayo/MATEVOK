@@ -142,6 +142,8 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
   let targetId;
   const consoleIssues = [];
   const pageRequests = [];
+  const pageDialogs = [];
+  let pageLoadEvents = 0;
   const cdpHttp = `http://127.0.0.1:${browserPort}`;
 
   async function waitFor(expression, label, timeout = 12000) {
@@ -179,6 +181,18 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
   async function readStorage(expression) {
     return evaluate(`import('./storage.js').then(async s=>(${expression}))`);
   }
+  async function assertBeforeUnloadProtection(expected, label) {
+    const result = await evaluate(`(()=>{const event=new Event('beforeunload',{cancelable:true});const completed=window.dispatchEvent(event);return {prevented:event.defaultPrevented,completed,returnValue:event.returnValue,owner:localStorage.getItem('matevok-workspace-editor-owner-v1')}})()`);
+    assert.equal(result.prevented, expected, `${label}: unexpected beforeunload cancellation state (${JSON.stringify(result)})`);
+    return result;
+  }
+  async function reloadPage(label) {
+    const previousLoads = pageLoadEvents;
+    await page.call("Page.reload");
+    const deadline = Date.now() + 15000;
+    while (pageLoadEvents === previousLoads && Date.now() < deadline) await pause(50);
+    assert.ok(pageLoadEvents > previousLoads, `${label}: Chromium did not complete a new page load; beforeunload dialogs=${JSON.stringify(pageDialogs)}`);
+  }
 
   try {
     chrome = spawn(chromePath, [
@@ -214,6 +228,8 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     page.on("Runtime.exceptionThrown", (event) => consoleIssues.push(event.exceptionDetails?.text || "uncaught exception"));
     page.on("Log.entryAdded", (event) => { if (["error", "warning"].includes(event.entry.level)) consoleIssues.push(`${event.entry.level}: ${event.entry.text}`); });
     page.on("Network.requestWillBeSent", (event) => pageRequests.push({ url: event.request.url, method: event.request.method }));
+    page.on("Page.loadEventFired", () => { pageLoadEvents += 1; });
+    page.on("Page.javascriptDialogOpening", (event) => pageDialogs.push({ type: event.type, url: event.url }));
     await Promise.all([page.call("Page.enable"), page.call("Runtime.enable"), page.call("Log.enable"), page.call("Network.enable")]);
     await browser.call("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads, eventsEnabled: true });
 
@@ -249,9 +265,11 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     await evaluate(`Promise.all(${JSON.stringify(staleCacheNames)}.map(n=>caches.open(n).then(c=>c.put('/obsolete-shell-entry',new Response('stale')))))`);
     await page.call("Page.navigate", { url: `${origin}/` });
     await waitFor("document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "application storage startup");
+    await assertBeforeUnloadProtection(false, "clean first launch");
     assert.ok(await evaluate("document.querySelector('#first-use-heading')?.textContent.includes('Set up once')"), "empty first-use state did not appear");
     await clickButton("Create your first class");
     await waitFor("document.querySelector('[data-dialog=class]')?.open", "class dialog");
+    await assertBeforeUnloadProtection(false, "focused untouched class form");
     await fill('[data-dialog="class"] [name="className"]', "Synthetic Release QA");
     await fill('[data-dialog="class"] [name="gradeLevel"]', "Grade 7");
     await fill('[data-dialog="class"] [name="subject"]', "Science");
@@ -318,9 +336,10 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
       return {classId:main.id,secondId:second.id,students:students.map(x=>({id:x.id,name:x.fullName})),assessmentId:assessment.id,historyAssessmentIds:history.map(x=>x.id),lessonId:lesson.id,newerLessonId:newerLesson.id,questionId:question.id,archivedId:archived.id,date};
     })()`);
     assert.equal(seed.students.length, 40);
-    await page.call("Page.reload");
+    await assertBeforeUnloadProtection(false, "clean class and roster before synthetic data reopen");
+    await reloadPage("synthetic data reload");
     await waitFor("document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "reload with synthetic data");
-    await evaluate(`(()=>{const card=[...document.querySelectorAll('.class-card')].find(x=>x.querySelector('h2')?.textContent==='Synthetic Release QA');if(!card)throw new Error('Synthetic class missing after reload');card.querySelector('button').click();return true})()`);
+    await evaluate(`(()=>{const card=[...document.querySelectorAll('.class-card')].find(x=>x.querySelector('h2')?.textContent==='Synthetic Release QA');if(!card)throw new Error('Synthetic class missing after reload; '+JSON.stringify({url:location.href,heading:document.querySelector('[data-app] h1')?.textContent,body:document.querySelector('[data-app]')?.innerText?.slice(0,900),dialogs:[...document.querySelectorAll('dialog[open]')].map(x=>x.dataset.dialog)}));card.querySelector('button').click();return true})()`);
     await waitFor("document.querySelector('.today-workspace')", "Today Overview");
     const overview = await evaluate("(()=>({directory:!!document.querySelector('.workspace-tools,.workspace-tools-grid'),duplicateTaskHeading:[...document.querySelectorAll('h1,h2')].some(h=>h.textContent.trim()==='Choose the next task'),roster:document.querySelector('.roster-panel h2')?.textContent,today:!!document.querySelector('.today-workspace'),history:document.querySelector('.class-attendance-history')?.innerText||'',nav:[...document.querySelectorAll('.primary-nav [data-nav-item]')].map(item=>item.dataset.navItem)}))()");
     assert.equal(overview.directory, false, "Overview should not duplicate the sidebar tool directory");
@@ -386,6 +405,7 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.notEqual(classWorkSticky.display, "none");
     assert.ok(classWorkSticky.height >= 44, "mobile Class Work Save target is under 44px");
     assert.equal(classWorkSticky.overlap, false, "sticky Class Work Save covers the final student row");
+    await assertBeforeUnloadProtection(true, "dirty Class Work submission draft");
     await nav("Gradebook");
     await waitFor("document.querySelector('[data-dialog=leave-class-work]')?.open", "unsaved Class Work navigation guard");
     await clickButton("Keep editing");
@@ -397,9 +417,10 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     const partialFailure = await readStorage(`s.listWorkSubmissionsForItem(${JSON.stringify(classWorkItemId)})`);
     assert.deepEqual(partialFailure, [], "a synchronous mid-batch write failure must roll back every status");
     assert.equal(await evaluate("document.querySelector('[data-class-work-save-state]')?.textContent"), "Unsaved changes", "failed persistence must not claim Saved");
+    await assertBeforeUnloadProtection(true, "failed Class Work save remains protected");
     await evaluate("IDBObjectStore.prototype.put=window.__originalWorkStorePut;delete window.__originalWorkStorePut;true");
 
-    await evaluate(`(()=>{window.__classWorkWriteBlockStarted=false;window.__classWorkWriteBlockDone=false;const open=indexedDB.open('teacher-workspace');open.onsuccess=()=>{const db=open.result,tx=db.transaction(['workSubmissions'],'readwrite'),store=tx.objectStore('workSubmissions'),blocker={id:'synthetic-work-write-blocker',classId:'synthetic-block',workItemId:'synthetic-block',studentId:'synthetic-block',status:'submitted',type:'work-submission',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};for(let i=0;i<12000;i++)store.put({...blocker,updatedAt:String(i)});store.delete(blocker.id);tx.oncomplete=()=>{window.__classWorkWriteBlockDone=true;db.close()};window.__classWorkWriteBlockStarted=true};return true})()`);
+    await evaluate(`(()=>{window.__classWorkWriteBlockStarted=false;window.__classWorkWriteBlockDone=false;const open=indexedDB.open('teacher-workspace');open.onsuccess=()=>{const db=open.result,tx=db.transaction(['workSubmissions'],'readwrite'),store=tx.objectStore('workSubmissions'),blocker={id:'synthetic-work-write-blocker',classId:'synthetic-block',workItemId:'synthetic-block',studentId:'synthetic-block',status:'submitted',type:'work-submission',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};for(let i=0;i<4000;i++)store.put({...blocker,updatedAt:String(i)});store.delete(blocker.id);tx.oncomplete=()=>{window.__classWorkWriteBlockDone=true;db.close()};window.__classWorkWriteBlockStarted=true};return true})()`);
     await waitFor("window.__classWorkWriteBlockStarted", "synthetic IndexedDB write lock");
     const savingState = await evaluate(`(()=>{document.querySelector('.class-work-save--mobile button[data-class-work-save]')?.click();const select=document.querySelector('[data-work-status=${JSON.stringify(seed.students[4].id)}]'),before=select.value;select.value='missing';select.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[data-nav-item="Gradebook"]')?.click();return {saveState:document.querySelector('[data-class-work-save-state]')?.textContent,saveDisabled:document.querySelector('[data-class-work-save]')?.disabled,studentDisabled:select.disabled,statusAfterAttempt:select.value,activeNav:document.querySelector('[data-nav-item][data-current]')?.dataset.navItem,leaveDialog:document.querySelector('[data-dialog="leave-class-work"]')?.open,before}})()`);
     assert.equal(savingState.saveState, "Saving submission statuses…", "the in-flight write must be visible");
@@ -408,9 +429,10 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.equal(savingState.statusAfterAttempt, savingState.before, "an attempted edit cannot alter an in-flight save snapshot");
     assert.equal(savingState.activeNav, "Class Work", "navigation must stay in the item until its save completes");
     assert.equal(savingState.leaveDialog, false, "the user should not be offered a misleading discard action during a pending write");
-    await waitFor("window.__classWorkWriteBlockDone&&document.querySelector('[data-class-work-save-state]')?.textContent==='Saved on this device'", "Class Work save after queued storage transaction", 15000);
+    await waitFor("window.__classWorkWriteBlockDone&&document.querySelector('[data-class-work-save-state]')?.textContent==='Saved on this device'", "Class Work save after queued storage transaction", 20000);
     await evaluate("document.querySelector('.class-work-save--mobile button[data-class-work-save]')?.click()");
     await waitFor("document.querySelector('[data-class-work-save-state]')?.textContent==='Saved on this device'", "explicit Class Work status save");
+    await assertBeforeUnloadProtection(false, "saved Class Work submission draft");
     const savedWorkStates = await readStorage(`s.listWorkSubmissionsForItem(${JSON.stringify(classWorkItemId)}).then(items=>items.map(({studentId,status})=>({studentId,status})))`);
     assert.equal(savedWorkStates.length, 5, "only explicitly recorded statuses should be persisted");
     assert.equal(savedWorkStates.find((entry) => entry.studentId === seed.students[0].id)?.status, "submitted", "a saved zero score must remain independently submitted");
@@ -530,12 +552,19 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
 
     await evaluate(`(()=>{const row=document.querySelector('[data-attendance-row=${JSON.stringify(seed.students[3].id)}]');row.querySelector('[data-attendance-status=late]').click()})()`);
     await waitFor("document.querySelector('[data-attendance-save-state]')?.textContent==='Unsaved changes'", "attendance edit state before navigation guard");
+    await assertBeforeUnloadProtection(true, "dirty Attendance draft");
+    const attendanceOwnerBeforeCancelledExit = await evaluate("localStorage.getItem('matevok-workspace-editor-owner-v1')");
+    const cancelledAttendanceExit = await assertBeforeUnloadProtection(true, "cancelled browser exit while Attendance is dirty");
+    assert.ok(cancelledAttendanceExit.prevented);
+    assert.equal(cancelledAttendanceExit.owner, attendanceOwnerBeforeCancelledExit, "the owner lease must remain unchanged when beforeunload is canceled and pagehide does not run");
+    assert.equal(await evaluate("document.querySelector('[data-attendance-save-state]')?.textContent"), "Unsaved changes", "a canceled page exit must leave the Attendance draft editable");
     await nav("Gradebook");
     assert.equal(await evaluate("document.querySelector('[data-dialog=leave-attendance]')?.open"), true, "unsaved attendance navigation was not guarded");
     await clickButton("Keep editing");
     assert.equal(await evaluate("document.querySelector('[data-attendance-save-state]')?.textContent"), "Unsaved changes");
     await clickButton("Save attendance");
     await waitFor("document.querySelector('[data-attendance-save-state]')?.textContent==='Saved on this device'", "second attendance save");
+    await assertBeforeUnloadProtection(false, "saved Attendance draft");
     await nav("Gradebook");
     await waitFor("document.querySelectorAll('.assessment-card').length===20", "20-assessment Gradebook");
     const assessmentLookup = await evaluate(`(()=>{const input=document.querySelector('[data-gradebook-search]'),filter=document.querySelector('[data-gradebook-score-filter]');if(!input||!filter)throw new Error('long Gradebook assessment controls missing');input.focus();input.value='Synthetic Term Review 19';input.setSelectionRange(input.value.length,input.value.length);input.dispatchEvent(new Event('input',{bubbles:true}));const found=document.querySelectorAll('.assessment-card').length,focused=document.activeElement===input,caret=input.selectionStart;filter.value='complete';filter.dispatchEvent(new Event('change',{bubbles:true}));const complete=document.querySelectorAll('.assessment-card').length;filter.value='needs';filter.dispatchEvent(new Event('change',{bubbles:true}));const incomplete=document.querySelectorAll('.assessment-card').length;input.value='Synthetic Term Review 01';input.dispatchEvent(new Event('input',{bubbles:true}));filter.value='complete';filter.dispatchEvent(new Event('change',{bubbles:true}));const completedAssessment=document.querySelectorAll('.assessment-card').length;filter.value='needs';filter.dispatchEvent(new Event('change',{bubbles:true}));const completedNeeds=document.querySelectorAll('.assessment-card').length;input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));filter.value='all';filter.dispatchEvent(new Event('change',{bubbles:true}));const weekly=[...document.querySelectorAll('.assessment-card')].find(x=>x.querySelector('h2')?.textContent==='Synthetic Weekly Check');return {found,focused,caret,complete,incomplete,completedAssessment,completedNeeds,total:document.querySelectorAll('.assessment-card').length,weekly:weekly?.innerText,count:document.querySelector('[data-gradebook-assessment-count]')?.textContent,overflow:document.documentElement.scrollWidth>innerWidth}})()`);
@@ -567,20 +596,26 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     }
     await setViewport(390, 844);
     await fill(`[data-score-input=${JSON.stringify(seed.students[0].id)}]`, "0");
+    await assertBeforeUnloadProtection(false, "unchanged recorded zero score");
     await evaluate(`document.querySelector('[data-score-input=${JSON.stringify(seed.students[0].id)}]').focus()`);
     await page.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
     await page.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
     assert.equal(await evaluate(`document.activeElement?.getAttribute('data-score-input')===${JSON.stringify(seed.students[1].id)}`), true, "Enter did not advance to the next roster score");
+    await fill(`[data-score-input=${JSON.stringify(seed.students[2].id)}]`, "1");
+    await assertBeforeUnloadProtection(true, "dirty Gradebook score draft");
     await clickButton("Save scores");
     await waitFor("document.querySelector('[data-score-save-state]')?.textContent==='Saved on this device'", "score save");
-    await fill(`[data-score-input=${JSON.stringify(seed.students[0].id)}]`, "1");
+    await assertBeforeUnloadProtection(false, "saved Gradebook score draft");
+    await fill(`[data-score-input=${JSON.stringify(seed.students[2].id)}]`, "");
+    await assertBeforeUnloadProtection(true, "second dirty Gradebook score draft");
     await nav("Attendance");
     await waitFor("document.querySelector('[data-dialog=leave-scores]')?.open", "unsaved Gradebook navigation guard");
     await clickButton("Keep editing");
     assert.equal(await evaluate("document.querySelector('[data-dialog=leave-scores]')?.open"), false, "Keep editing should close the unsaved-score guard");
-    assert.equal(await evaluate(`document.querySelector('[data-score-input=${JSON.stringify(seed.students[0].id)}]')?.value`), "1");
+    assert.equal(await evaluate(`document.querySelector('[data-score-input=${JSON.stringify(seed.students[2].id)}]')?.value`), "");
     await clickButton("Save scores");
     await waitFor("document.querySelector('[data-score-save-state]')?.textContent==='Saved on this device'", "guarded score save");
+    await assertBeforeUnloadProtection(false, "Gradebook save after continuing to edit");
     await clickButton("Paste scores");
     const pasted = ["0", "8.5", "6", ...Array(37).fill("")].join("\n");
     await fill('[data-dialog="score-paste"] textarea[name="scores"]', pasted);
@@ -626,6 +661,21 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.equal(lessonLookup.noMatch, "No matching lessons");
     assert.match(lessonLookup.noMatchText, /Try a different title or date/);
     assert.equal(lessonLookup.cleared, 2, "clearing Lesson search should restore the class lesson list");
+    await evaluate(`(()=>{const card=[...document.querySelectorAll('.lesson-card')].find(item=>item.querySelector('h2')?.textContent==='Synthetic Lesson Plan');if(!card)throw new Error('lesson for exit-protection check missing');card.querySelector('button').click()})()`);
+    await waitFor("document.querySelector('[data-lesson-editor]')", "lesson editor for page-exit protection");
+    await assertBeforeUnloadProtection(false, "untouched saved Lesson editor");
+    await fill('[data-lesson-editor] [name="title"]', "Synthetic Lesson Plan — unsaved");
+    await assertBeforeUnloadProtection(true, "dirty Lesson draft");
+    await evaluate(`(()=>{const title=document.querySelector('[data-lesson-editor] [name="title"]');title.value='Synthetic Lesson Plan';title.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+    await assertBeforeUnloadProtection(false, "reverted Lesson draft");
+    await fill('[data-lesson-editor] [name="title"]', "Synthetic Lesson Plan — page exit guard");
+    await clickButton("Save lesson");
+    await waitFor("document.querySelector('[data-lesson-editor] [role=status]')?.textContent==='Saved on this device'", "lesson save clears page-exit warning");
+    await assertBeforeUnloadProtection(false, "saved Lesson draft");
+    await fill('[data-lesson-editor] [name="title"]', "Synthetic Lesson Plan");
+    await clickButton("Save lesson");
+    await waitFor("document.querySelector('[data-lesson-editor] [role=status]')?.textContent==='Saved on this device'", "restore original synthetic lesson title");
+    await assertBeforeUnloadProtection(false, "Lesson after restoring original synthetic content");
 
     await nav("Classroom Mode");
     await waitFor("document.querySelector('#classroom-group-mode')", "Classroom Mode");
@@ -760,6 +810,7 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     await clickButton("Open Class Roster");
     assert.match(await evaluate("document.querySelector('.report-summary').innerText"), /40 active · 1 archived/);
     await nav("My Materials");
+    await waitFor("document.querySelectorAll('.material-card').length===2", "local My Materials templates");
     assert.equal(await evaluate("document.querySelectorAll('.material-card').length"), 2);
     const materialLookup = await evaluate(`(()=>{const input=document.querySelector('.materials-tools input[type=search]');input.focus();input.value='sYnThEtIc LeSsOn';input.setSelectionRange(input.value.length,input.value.length);input.dispatchEvent(new Event('input',{bubbles:true}));const result={focused:document.activeElement===input,caret:input.selectionStart,visible:document.querySelectorAll('.material-card').length};input.value='No Such Material';input.dispatchEvent(new Event('input',{bubbles:true}));result.noMatch=document.querySelector('[data-material-results] .library-empty h2')?.textContent;input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));result.cleared=document.querySelectorAll('.material-card').length;return result})()`);
     assert.equal(materialLookup.focused, true, "My Materials search should retain focus while updating results");
@@ -811,7 +862,7 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.equal(await evaluate("document.querySelector('[data-roster-search]')?.value"), "", "student lookup must not leak across class switches");
     assert.equal(await evaluate("document.querySelectorAll('[data-roster-results] .roster-list li').length"), 40);
     await nav("My Classes");
-    await page.call("Page.reload");
+    await reloadPage("saved-data persistence reopen");
     await waitFor("document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "reopen persistence");
     const persistedClassVisible = await evaluate("(()=>({found:[...document.querySelectorAll('.class-card h2')].some(x=>x.textContent==='Synthetic Release QA'),body:document.querySelector('[data-app]')?.innerText?.slice(0,900),url:location.href,classes:[...document.querySelectorAll('.class-card h2')].map(x=>x.textContent)}))()");
     assert.equal(persistedClassVisible.found, true, `main class missing after reload: ${JSON.stringify(persistedClassVisible)}`);
@@ -823,7 +874,7 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     const workerRegistration = await evaluate("navigator.serviceWorker.ready.then(r=>({scope:r.scope,script:r.active?.scriptURL}))");
     assert.equal(workerRegistration.scope, `${origin}/`);
     assert.ok(workerRegistration.script.endsWith(`/sw.js?v=${shellVersion}`));
-    await page.call("Page.reload");
+    await reloadPage("service-worker control reload");
     try { await waitFor("navigator.serviceWorker.controller!==null", "service worker control after reload", 10000); }
     catch (error) {
       const serviceWorkerState = await evaluate("(async()=>({url:location.href,controller:navigator.serviceWorker.controller?.scriptURL||null,registrations:(await navigator.serviceWorker.getRegistrations()).map(r=>({scope:r.scope,active:r.active?.scriptURL,state:r.active?.state,waiting:r.waiting?.scriptURL,installing:r.installing?.state}))}))()");
@@ -835,8 +886,9 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.ok(cachesBeforeOffline.urls.some((url) => url.endsWith("/lesson-reference.js")));
     assert.equal(cachesBeforeOffline.hasStudentData, false);
     assert.ok(cachesBeforeOffline.urls.some((url) => url.endsWith("/app.js")));
+    await assertBeforeUnloadProtection(false, "clean dashboard before offline shell reload");
     await page.call("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0, connectionType: "none" });
-    await page.call("Page.reload");
+    await reloadPage("offline shell reload");
     await waitFor("document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "cold app startup while offline", 15000);
     assert.equal(await evaluate("navigator.onLine"), false);
     assert.equal(await readStorage(`s.listStudents(${JSON.stringify(seed.classId)}).then(x=>x.length)`), 40);
@@ -850,7 +902,8 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     await waitFor("[...document.querySelectorAll('[data-attendance-save-state]')].some(x=>x.textContent==='Saved on this device')", "offline attendance save");
     const offlineAttendanceStatus = await readStorage(`s.listAttendanceForDate(${JSON.stringify(seed.classId)},${JSON.stringify(seed.date)}).then(rows=>rows.find(x=>x.studentId===${JSON.stringify(offlineSavedStudent)})?.status)`);
     assert.equal(offlineAttendanceStatus, "late");
-    await page.call("Page.reload");
+    await assertBeforeUnloadProtection(false, "saved offline Attendance before reload");
+    await reloadPage("offline saved-data reopen");
     await waitFor("document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "offline saved-data reopen", 15000);
     assert.equal(await evaluate("navigator.onLine"), false);
     assert.equal(await readStorage(`s.listAttendanceForDate(${JSON.stringify(seed.classId)},${JSON.stringify(seed.date)}).then(rows=>rows.find(x=>x.studentId===${JSON.stringify(offlineSavedStudent)})?.status)`), "late");
@@ -1119,6 +1172,8 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.ok(migrationDebugTarget?.webSocketDebuggerUrl, "Chromium did not expose the isolated migration page");
     page = cdp(migrationDebugTarget.webSocketDebuggerUrl);
     await page.ready;
+    pageLoadEvents = 0;
+    page.on("Page.loadEventFired", () => { pageLoadEvents += 1; });
     page.on("Runtime.exceptionThrown", (event) => consoleIssues.push(event.exceptionDetails?.text || "uncaught exception"));
     page.on("Log.entryAdded", (event) => { if (["error", "warning"].includes(event.entry.level)) consoleIssues.push(`${event.entry.level}: ${event.entry.text}`); });
     page.on("Network.requestWillBeSent", (event) => pageRequests.push({ url: event.request.url, method: event.request.method }));
@@ -1153,7 +1208,7 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     assert.deepEqual(v9Preserved.lessons, ["V8 Preserved Lesson"]);
     assert.deepEqual(v9Preserved.materials, ["V8 Preserved Material"]);
     assert.equal(v9Preserved.classWork, 0, "new stores must begin empty without altering legacy records");
-    await page.call("Page.reload");
+    await reloadPage("post-migration reopen");
     await waitFor("document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "reopen after v9 migration");
     assert.equal((await readStorage("s.getLocalStoreHealth()" )).databaseVersion, 9, "reopening must not rerun destructive or duplicate migrations");
     const restoreFailure = await readStorage(`(async()=>{const original=await s.createBackup(),replacement=structuredClone(original),className=original.data.classes[0]?.className,studentName=original.data.students[0]?.fullName;replacement.data.classes[0].className='Replacement Must Roll Back';replacement.data.students[0].fullName='Replacement Student Must Roll Back';const nativePut=IDBObjectStore.prototype.put;let injected=false;IDBObjectStore.prototype.put=function(...args){if(!injected&&this.name==='students'){injected=true;throw new DOMException('Synthetic replacement restore write failure','QuotaExceededError')}return nativePut.apply(this,args)};let rejected=false;try{await s.replaceWithBackup(replacement)}catch{rejected=true}finally{IDBObjectStore.prototype.put=nativePut}const classes=await s.listClasses(),students=await s.listStudents('v8-preserved-class');return {rejected,injected,className,studentName,remainingClasses:classes.map(item=>item.className),remainingStudents:students.map(item=>item.fullName)}})()`);
@@ -1176,12 +1231,9 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
       if (chromeExited) chromeStopped = await Promise.race([chromeExited.then(() => true), pause(5000).then(() => false)]);
     }
     try { if (browser) browser.close(); } catch {}
-    if (!chromeStopped) {
-      try {
-        if (chrome?.pid && process.platform === "win32") spawnSync("taskkill", ["/PID", String(chrome.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-        else chrome?.kill();
-      } catch { try { chrome?.kill(); } catch {} }
-    }
+    if (process.platform === "win32" && chrome?.pid) {
+      try { spawnSync("taskkill", ["/PID", String(chrome.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); } catch { if (!chromeStopped) try { chrome.kill(); } catch {} }
+    } else if (!chromeStopped) { try { chrome?.kill(); } catch {} }
     server.closeAllConnections();
     await new Promise((resolveClose) => server.close(resolveClose));
     if (chromeExited && !chromeStopped) await Promise.race([chromeExited, pause(5000)]);

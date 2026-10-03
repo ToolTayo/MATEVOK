@@ -33,6 +33,17 @@ test("workspace context, dialog return focus, and small-screen dialog scrolling 
   assert.match(css, /@media \(max-width: 700px\) \{ \.status-button, \.attendance-date input, \.score-input/);
 });
 
+test("browser page exit is guarded only by the canonical explicit-save draft states", () => {
+  const guard = app.match(/function hasUnsavedPageWork\(\)[\s\S]*?window\.addEventListener\("beforeunload", protectUnsavedPageExit\);/)?.[0] || "";
+  assert.match(guard, /state\.attendance\?\.dirty/);
+  assert.match(guard, /state\.scoreSession\?\.dirty/);
+  assert.match(guard, /state\.classWorkSession\?\.dirty/);
+  assert.match(guard, /state\.lesson\?\.dirty/);
+  assert.match(guard, /event\.preventDefault\(\); event\.returnValue = true/);
+  assert.equal((app.match(/addEventListener\("beforeunload"/g) || []).length, 1, "one stable listener must protect the page without accumulating lifecycle handlers");
+  assert.match(app, /window\.addEventListener\("pagehide", \(\) => \{[^\n]*workspaceLease\.release\(\); workspaceLock\?\.release\(\)/, "lock ownership remains released only after the page actually leaves");
+});
+
 test("Escape closes ordinary dialogs through focus restoration but cannot dismiss the workspace lock", () => {
   const cancelHandling = app.match(/Object\.entries\(dialogs\)\.forEach\(\(\[name, dialog\]\) => dialog\.addEventListener\("cancel", \(event\) => \{[\s\S]*?\}\)\);/)?.[0] || "";
   assert.ok(cancelHandling);

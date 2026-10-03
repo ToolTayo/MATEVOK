@@ -19,15 +19,16 @@ const mime = new Map([[".html", "text/html; charset=utf-8"], [".js", "text/javas
 const pause = (ms) => new Promise((resolvePause) => setTimeout(resolvePause, ms));
 
 function cdp(url) {
-  const socket = new WebSocket(url), pending = new Map(); let nextId = 0;
+  const socket = new WebSocket(url), pending = new Map(), listeners = new Map(); let nextId = 0;
   const ready = new Promise((resolveOpen, reject) => { socket.addEventListener("open", resolveOpen, { once: true }); socket.addEventListener("error", reject, { once: true }); });
-  socket.addEventListener("message", (event) => { const message = JSON.parse(String(event.data)); if (!message.id) return; const entry = pending.get(message.id); if (!entry) return; pending.delete(message.id); message.error ? entry.reject(new Error(message.error.message)) : entry.resolve(message.result); });
-  return { ready, call(method, params = {}) { const id = ++nextId; return new Promise((resolveCall, reject) => { pending.set(id, { resolve: resolveCall, reject }); socket.send(JSON.stringify({ id, method, params })); }); }, close() { socket.close(); } };
+  socket.addEventListener("message", (event) => { const message = JSON.parse(String(event.data)); if (message.id) { const entry = pending.get(message.id); if (!entry) return; pending.delete(message.id); message.error ? entry.reject(new Error(message.error.message)) : entry.resolve(message.result); return; } for (const listener of listeners.get(message.method) || []) listener(message.params); });
+  return { ready, call(method, params = {}) { const id = ++nextId; return new Promise((resolveCall, reject) => { pending.set(id, { resolve: resolveCall, reject }); socket.send(JSON.stringify({ id, method, params })); }); }, on(method, listener) { const group = listeners.get(method) || []; group.push(listener); listeners.set(method, group); }, close() { socket.close(); } };
 }
 
 test("Edge recovers a frozen/legacy peer through the service worker without opening two editors", { skip: !browserPath && "No installed Chrome/Edge executable was found." }, async (t) => {
   const tempRoot = await mkdtemp(join(os.tmpdir(), "matevok-lock-edge-")), profile = join(tempRoot, "profile");
   let server, browserProcess, browser, first, second, third, firstTargetId, secondTargetId, thirdTargetId;
+  const pageLoadCounts = new WeakMap();
   try {
     server = createServer(async (request, response) => {
       const url = new URL(request.url || "/", "http://127.0.0.1");
@@ -54,7 +55,7 @@ test("Edge recovers a frozen/legacy peer through the service worker without open
       const deadline = Date.now() + 10000; let target;
       while (Date.now() < deadline) { target = (await (await fetch(`${debugUrl}/json/list`)).json()).find((item) => item.id === targetId); if (target?.webSocketDebuggerUrl) break; await pause(50); }
       assert.ok(target?.webSocketDebuggerUrl, "Edge page target did not appear");
-      const page = cdp(target.webSocketDebuggerUrl); await page.ready; await Promise.all([page.call("Page.enable"), page.call("Runtime.enable")]);
+      const page = cdp(target.webSocketDebuggerUrl); await page.ready; pageLoadCounts.set(page, 0); page.on("Page.loadEventFired", () => pageLoadCounts.set(page, pageLoadCounts.get(page) + 1)); await Promise.all([page.call("Page.enable"), page.call("Runtime.enable")]);
       return { page, targetId };
     };
     const evaluate = async (page, expression) => {
@@ -66,6 +67,13 @@ test("Edge recovers a frozen/legacy peer through the service worker without open
       const end = Date.now() + timeout;
       while (Date.now() < end) { try { if (await evaluate(page, expression)) return; } catch {} await pause(75); }
       throw new Error(`Timed out waiting for ${label}: ${JSON.stringify(await evaluate(page, "({url:location.href,status:document.querySelector('[data-storage-message]')?.textContent,dialogs:[...document.querySelectorAll('dialog[open]')].map(d=>d.dataset.dialog),classes:document.querySelector('[data-app]')?.innerText?.slice(0,400)})").catch((error) => String(error)))}`);
+    };
+    const reloadPage = async (page, label) => {
+      const previous = pageLoadCounts.get(page) || 0;
+      await page.call("Page.reload");
+      const deadline = Date.now() + 15000;
+      while ((pageLoadCounts.get(page) || 0) <= previous && Date.now() < deadline) await pause(50);
+      assert.ok((pageLoadCounts.get(page) || 0) > previous, `Chromium did not complete ${label}`);
     };
 
     ({ page: first, targetId: firstTargetId } = await createTab(origin));
@@ -118,7 +126,7 @@ test("Edge recovers a frozen/legacy peer through the service worker without open
     await evaluate(second, "document.querySelector('[data-menu-button]')?.click();true");
     await evaluate(second, "document.querySelector('[data-nav-item=\\\"My Classes\\\"]')?.click();true");
     await wait(second, "document.querySelector('[data-app] h1')?.textContent==='Your classes'", "normal navigation after peer close");
-    await second.call("Page.reload");
+    await reloadPage(second, "refresh after recovery");
     await wait(second, "document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "refresh after recovery");
     assert.ok((await evaluate(second, "[...document.querySelectorAll('.class-card h2')].map(x=>x.textContent)")).includes("Synthetic lock preservation"));
     assert.equal(await evaluate(second, "document.documentElement.scrollWidth>innerWidth"), false);
