@@ -2,8 +2,11 @@
   "name": "MATEVOK",
   "short_name": "MATEVOK",
   "description": "A private, local-first workspace for teachers.",
+  "id": "./",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
+  "prefer_related_applications": false,
   "background_color": "#f7f8f7",
   "theme_color": "#155e75",
   "icons": [
@@ -11,7 +14,7 @@
       "src": "favicon.svg",
       "sizes": "192x192 512x512",
       "type": "image/svg+xml",
-      "purpose": "any"
+      "purpose": "any maskable"
     }
   ]
 }

@@ -11,6 +11,7 @@ import { nextAttendanceStatus } from "./attendance-keyboard.js";
 import { acquireWorkspaceLock, createSingleFlight, createWorkspaceEditorLease, WORKSPACE_OWNER_KEY, WORKSPACE_RECOVERY_LOCK } from "./workspace-lock.js";
 import { selectLessonReference } from "./lesson-reference.js";
 import { commitSubmissionDraftSnapshot, deriveClassWorkCountsByItem, deriveClassWorkSummary, deriveDueTodayClassWork, submissionDraftIsDirty, WORK_SUBMISSION_LABELS, WORK_SUBMISSION_STATUSES } from "./class-work.js";
+import { installExperienceState, readInstallDismissedUntil, recordInstallDismissal } from "./pwa-install.js";
 
 const root = document.querySelector("[data-app]");
 const live = document.querySelector("[data-live]");
@@ -1081,7 +1082,6 @@ dialogs.restore.addEventListener("close", () => { state.backup = null; });
 dialogs.restore.querySelector("form").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; if (!form.elements.replace.checked) { errorMessage(new Error("Confirm that restoring will replace your current local records.")); return; } if (!state.backup) { errorMessage(new Error("Choose and review a backup file before restoring.")); return; } const buttons = [...form.querySelectorAll("button")], wasDisabled = buttons.map((button) => button.disabled), progress = form.querySelector("[data-restore-progress]"); buttons.forEach((button) => { button.disabled = true; }); progress.textContent = "Restoring this backup… Keep this window open. A large school-year backup can take a minute or more."; progress.hidden = false; try { const restored = await replaceWithBackup(state.backup); noteClassroomChange(); hide("restore"); hide("backup"); state.backup = null; state.activeClass = null; state.archivedView = false; await refreshClasses(); renderDashboard(); announce(`Backup restored: ${restored.classCount} classes, ${restored.studentCount} student records, ${restored.attendanceCount} attendance records, ${restored.assessmentCount} assessments, ${restored.scoreCount} scores, ${restored.questionCount} questions, ${restored.optionCount} answer choices, ${restored.lessonCount} lessons, ${restored.materialCount} materials, ${restored.classWorkCount} class-work items, and ${restored.workSubmissionCount} submission statuses.`); } catch (error) { progress.hidden = true; errorMessage(error); } finally { buttons.forEach((button, index) => { if (button.isConnected) button.disabled = wasDisabled[index]; }); } });
 dialogs.restore.addEventListener("cancel", (event) => { if (pendingForms.has(dialogs.restore.querySelector("form"))) { event.preventDefault(); announce("Backup restore is in progress. Keep this window open until it finishes."); } });
 
-const installButton = document.querySelector("[data-install]"); let installPrompt; window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); installPrompt = event; installButton.hidden = false; }); installButton.addEventListener("click", async () => { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice; installButton.hidden = true; }); window.addEventListener("appinstalled", () => { installButton.hidden = true; });
 const menu = document.querySelector("[data-menu-button]"), sidebar = document.querySelector("[data-sidebar]"), scrim = document.querySelector("[data-sidebar-scrim]"); const closeMenu = () => { sidebar.dataset.open = "false"; menu.setAttribute("aria-expanded", "false"); }; menu.addEventListener("click", () => { const open = sidebar.dataset.open !== "true"; sidebar.dataset.open = String(open); menu.setAttribute("aria-expanded", String(open)); }); scrim.addEventListener("click", closeMenu); document.querySelector('[data-nav-item="My Classes"]')?.addEventListener("click", (event) => { if (!state.activeClass && !state.archivedView && currentLocation.textContent !== "My Materials") return; event.preventDefault(); requestWorkspaceNavigation("My Classes"); }); document.querySelectorAll(".nav-item--available[data-nav-item]").forEach((item) => item.addEventListener("click", () => requestWorkspaceNavigation(item.dataset.navItem))); document.addEventListener("keydown", (event) => { if (event.key !== "Escape") return; if (dialogs["workspace-lock"].open) { event.preventDefault(); event.stopPropagation(); dialogs["workspace-lock"].querySelector("[data-workspace-retry]")?.focus(); return; } if (sidebar.dataset.open === "true") { closeMenu(); menu.focus(); } }, true);
 const workspaceLockDialog = dialogs["workspace-lock"], workspaceLockCopy = workspaceLockDialog.querySelector("[data-workspace-lock-copy]"), workspaceRetryButton = workspaceLockDialog.querySelector("[data-workspace-retry]"), workspaceTakeoverButton = workspaceLockDialog.querySelector("[data-workspace-takeover]");
 function showWorkspaceBusy(recoveringLostWindow = false) { workspaceLockCopy.textContent = recoveringLostWindow ? "This window previously lost editing access. Any unsaved edits here remain unsaved. Close the other MATEVOK window, then reload the latest saved data to use this one again; or take over after confirming that other window will become read-only." : "Another MATEVOK window currently has editing access. If it is open, finish there or close it and try again. If it is suspended, you can take over after confirming that the other window will become read-only."; workspaceRetryButton.textContent = recoveringLostWindow ? "Reload latest saved data" : "Try again"; workspaceRetryButton.toggleAttribute("data-reload-after-lock-loss", recoveringLostWindow); workspaceTakeoverButton.hidden = false; document.querySelector("[data-storage-message]").textContent = "Workspace is open in another window · this window has not changed your data."; document.querySelector("[data-storage-dot]").dataset.state = "warning"; if (!workspaceLockDialog.open) workspaceLockDialog.showModal(); workspaceRetryButton.focus(); }
@@ -1106,6 +1106,134 @@ window.addEventListener("storage", (event) => { if (event.key === WORKSPACE_OWNE
 function hasUnsavedPageWork() { return Boolean(state.attendance?.dirty || state.scoreSession?.dirty || state.classWorkSession?.dirty || state.lesson?.dirty); }
 function protectUnsavedPageExit(event) { if (!hasUnsavedPageWork()) return; event.preventDefault(); event.returnValue = true; }
 window.addEventListener("beforeunload", protectUnsavedPageExit);
+const installButton = document.querySelector("[data-install]");
+const installHelpDialog = el("dialog", { class: "install-help-dialog", "data-dialog": "install-help", "aria-labelledby": "install-help-title" }, [
+  el("div", { class: "dialog-heading" }, [el("div", {}, [el("p", { class: "eyebrow", text: "Install MATEVOK" }), el("h2", { id: "install-help-title", text: "Add MATEVOK to your Home Screen" })])]),
+  el("p", { text: "In Safari on iPhone or iPad, tap Share, then choose Add to Home Screen." }),
+  el("p", { class: "form-note", text: "Installing does not back up your classroom data. Keep an encrypted backup somewhere safe." }),
+  el("div", { class: "dialog-actions" }, [action("Done", () => hide("install-help"), "button")])
+]);
+dialogs["install-help"] = installHelpDialog;
+document.body.append(installHelpDialog);
+installHelpDialog.addEventListener("cancel", (event) => { event.preventDefault(); hide("install-help"); });
+const updateNotice = el("aside", { class: "update-notice", "data-update-notice": "", hidden: true, "aria-label": "MATEVOK update" }, [
+  el("p", { "data-update-message": "", role: "status", "aria-live": "polite", "aria-atomic": "true" }),
+  el("button", { type: "button", class: "button button--quiet", text: "Reload to update", "data-apply-update": "" })
+]);
+document.querySelector(".topbar")?.after(updateNotice);
+if (installButton) {
+  installButton.setAttribute("aria-label", "Install MATEVOK");
+  installButton.replaceChildren(document.createTextNode("Install "), el("span", { class: "install-brand", text: "MATEVOK" }));
+}
+let installPrompt = null;
+function updateInstallControl() {
+  if (!installButton) return;
+  const mode = installExperienceState({ windowObject: window, nativePromptAvailable: Boolean(installPrompt), dismissedUntil: readInstallDismissedUntil(), now: Date.now() });
+  installButton.hidden = mode !== "native" && mode !== "ios-safari";
+  installButton.dataset.installMode = mode;
+}
+function announceInstallStatus(message) {
+  announce(message);
+}
+updateInstallControl();
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  installPrompt = event;
+  updateInstallControl();
+});
+installButton?.addEventListener("click", async () => {
+  if (installButton.dataset.installMode === "ios-safari" && !installPrompt) { show("install-help"); return; }
+  if (!installPrompt) return;
+  const promptEvent = installPrompt;
+  installPrompt = null;
+  installButton.disabled = true;
+  updateInstallControl();
+  try {
+    await promptEvent.prompt();
+    const choice = await promptEvent.userChoice;
+    if (choice?.outcome === "accepted") announceInstallStatus("The browser accepted the MATEVOK install request. The app is only marked installed after browser confirmation.");
+    else { recordInstallDismissal(); announceInstallStatus("No problem. Install MATEVOK later from this browser when you are ready."); }
+  } catch {
+    announceInstallStatus("Your browser could not open the install prompt. Check its menu for an install option, if available.");
+  } finally {
+    installButton.disabled = false;
+    updateInstallControl();
+  }
+});
+installHelpDialog?.addEventListener("close", () => { recordInstallDismissal(); installPrompt = null; updateInstallControl(); });
+window.addEventListener("appinstalled", () => {
+  installPrompt = null;
+  try { localStorage.removeItem("matevok-install-dismissed-until-v1"); } catch { /* Installed state is also detected from display mode. */ }
+  updateInstallControl();
+  announceInstallStatus("MATEVOK was installed. You can open it from your device's apps.");
+});
+window.addEventListener("pageshow", updateInstallControl);
+try { window.matchMedia("(display-mode: standalone)").addEventListener("change", updateInstallControl); } catch { /* Older Safari can still report navigator.standalone. */ }
+
+const updateMessage = document.querySelector("[data-update-message]");
+const applyUpdateButton = document.querySelector("[data-apply-update]");
+let updateRegistration = null;
+let updateReloadRequested = false;
+let updateChangeTimer = 0;
+function showUpdateNotice(message = "A MATEVOK update is ready. Reload when your work is saved.") {
+  if (!updateNotice) return;
+  updateMessage.textContent = message;
+  updateNotice.hidden = false;
+}
+function observeServiceWorkerRegistration(registration) {
+  if (!registration) return;
+  updateRegistration = registration;
+  if (registration.waiting && navigator.serviceWorker?.controller) showUpdateNotice();
+  registration.addEventListener("updatefound", () => {
+    const installing = registration.installing;
+    if (!installing) return;
+    const reportWaiting = () => {
+      if (installing.state === "installed" && registration.active && navigator.serviceWorker?.controller) showUpdateNotice();
+    };
+    installing.addEventListener("statechange", reportWaiting);
+    reportWaiting();
+  });
+}
+Promise.resolve(window.matevokServiceWorkerRegistrationPromise).then(observeServiceWorkerRegistration);
+navigator.serviceWorker?.addEventListener("controllerchange", () => {
+  if (!window.matevokHadServiceWorkerController) { window.matevokHadServiceWorkerController = true; return; }
+  showUpdateNotice();
+  if (!updateReloadRequested) return;
+  clearTimeout(updateChangeTimer);
+  if (hasUnsavedPageWork()) {
+    updateReloadRequested = false;
+    applyUpdateButton.disabled = false;
+    showUpdateNotice("Update is ready. Save your unsaved work, then choose Reload to update.");
+    announce("Save or leave without saving before reloading for this update.");
+    return;
+  }
+  window.location.reload();
+});
+applyUpdateButton?.addEventListener("click", () => {
+  if (hasUnsavedPageWork()) {
+    showUpdateNotice("Save your unsaved work before reloading for this update.");
+    announce("Save or leave without saving before reloading for this update.");
+    return;
+  }
+  const waiting = updateRegistration?.waiting;
+  if (!waiting) { window.location.reload(); return; }
+  updateReloadRequested = true;
+  applyUpdateButton.disabled = true;
+  showUpdateNotice("Applying the update. Your saved information stays on this device.");
+  try { waiting.postMessage({ type: "MATEVOK_APPLY_UPDATE" }); }
+  catch {
+    updateReloadRequested = false;
+    applyUpdateButton.disabled = false;
+    showUpdateNotice("The update could not be applied yet. You can try again later.");
+    return;
+  }
+  updateChangeTimer = window.setTimeout(() => {
+    if (!updateReloadRequested) return;
+    updateReloadRequested = false;
+    applyUpdateButton.disabled = false;
+    showUpdateNotice("The update is not ready yet. Your current version is still available; try again later.");
+  }, 10000);
+});
 window.addEventListener("pagehide", () => { startupGeneration += 1; initPromise = null; writeAccessEnabled = false; workspaceLease.release(); workspaceLock?.release(); workspaceLock = null; });
 window.addEventListener("pageshow", (event) => { if (event.persisted) void init(); });
 async function init() {

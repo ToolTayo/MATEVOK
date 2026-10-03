@@ -1,4 +1,7 @@
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=36").catch(() => {});
+window.matevokHadServiceWorkerController = Boolean(navigator.serviceWorker?.controller);
+window.matevokServiceWorkerRegistrationPromise = "serviceWorker" in navigator
+  ? navigator.serviceWorker.register("./sw.js?v=37").catch(() => null)
+  : Promise.resolve(null);
 
 window.addEventListener("error", (event) => {
   if (!String(event.filename || "").includes("app.js")) return;

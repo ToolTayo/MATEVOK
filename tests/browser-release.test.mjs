@@ -266,6 +266,43 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
     await page.call("Page.navigate", { url: `${origin}/` });
     await waitFor("document.querySelector('[data-storage-message]')?.textContent.includes('ready')", "application storage startup");
     await assertBeforeUnloadProtection(false, "clean first launch");
+    const installDismissalEvent = await evaluate(`(()=>{localStorage.removeItem('matevok-install-dismissed-until-v1');window.__installPromptCalls=0;const event=new Event('beforeinstallprompt',{cancelable:true});event.prompt=async()=>{window.__installPromptCalls++};event.userChoice=Promise.resolve({outcome:'dismissed'});const defaultAllowed=window.dispatchEvent(event);return {visible:!document.querySelector('[data-install]').hidden,defaultPrevented:event.defaultPrevented,defaultAllowed}})()`);
+    assert.equal(installDismissalEvent.visible, true, "an eligible browser prompt should reveal the install action");
+    assert.equal(installDismissalEvent.defaultPrevented, true, "the app should defer the native browser prompt until the teacher chooses Install");
+    assert.equal(installDismissalEvent.defaultAllowed, false);
+    await clickButton("Install MATEVOK");
+    await waitFor("Number(localStorage.getItem('matevok-install-dismissed-until-v1'))>Date.now()", "install dismissal cooldown");
+    assert.equal(await evaluate("window.__installPromptCalls"), 1, "the teacher action must invoke the browser's real prompt method");
+    assert.equal(await evaluate("document.querySelector('[data-install]').hidden"), true, "dismissing the browser prompt should hide the action during cooldown");
+    const suppressedInstallEvent = await evaluate("(()=>{const event=new Event('beforeinstallprompt',{cancelable:true});event.prompt=async()=>{};event.userChoice=Promise.resolve({outcome:'accepted'});window.dispatchEvent(event);return {visible:!document.querySelector('[data-install]').hidden,mode:document.querySelector('[data-install]').dataset.installMode}})()");
+    assert.deepEqual(suppressedInstallEvent, { visible: false, mode: "dismissed" }, "a repeat eligibility event must not nag after dismissal");
+    await evaluate("window.dispatchEvent(new Event('appinstalled'))");
+    const acceptedInstallEvent = await evaluate("(()=>{const event=new Event('beforeinstallprompt',{cancelable:true});event.prompt=async()=>{window.__installPromptCalls++};event.userChoice=Promise.resolve({outcome:'accepted'});window.dispatchEvent(event);return !document.querySelector('[data-install]').hidden})()");
+    assert.equal(acceptedInstallEvent, true, "a later eligible install prompt should be available again");
+    await clickButton("Install MATEVOK");
+    await waitFor("document.querySelector('[data-live]')?.textContent.includes('accepted the MATEVOK install request')", "accepted install request status");
+    assert.equal(await evaluate("window.__installPromptCalls"), 2);
+    assert.equal(await evaluate("document.querySelector('[data-live]')?.textContent.includes('MATEVOK was installed')"), false, "acceptance must not be misreported as confirmed installation");
+    await evaluate("window.dispatchEvent(new Event('appinstalled'))");
+    await waitFor("document.querySelector('[data-live]')?.textContent.includes('MATEVOK was installed')", "browser-confirmed installation status");
+    assert.equal(await evaluate("localStorage.getItem('matevok-install-dismissed-until-v1')"), null, "browser-confirmed installation clears install-dismissal state");
+    const iosGuidance = await evaluate(`(()=>{const descriptor=Object.getOwnPropertyDescriptor(navigator,'userAgent');window.__installOriginalUserAgent=descriptor;Object.defineProperty(navigator,'userAgent',{configurable:true,value:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1'});window.dispatchEvent(new Event('pageshow'));const button=document.querySelector('[data-install]');button.click();const dialog=document.querySelector('[data-dialog=install-help]');return {visible:!button.hidden,mode:button.dataset.installMode,open:dialog.open,text:dialog.textContent,focus:document.activeElement.textContent}})()`);
+    assert.equal(iosGuidance.visible, true);
+    assert.equal(iosGuidance.mode, "ios-safari");
+    assert.equal(iosGuidance.open, true);
+    assert.match(iosGuidance.text, /tap Share, then choose Add to Home Screen/);
+    assert.equal(iosGuidance.focus, "Done", "install guidance should move focus into its dialog");
+    for (const [width, height] of [[320, 740], [360, 800], [390, 844], [430, 844], [768, 1024], [1024, 768], [1280, 900]]) {
+      await setViewport(width, height);
+      const metrics = await evaluate("(()=>{const dialog=document.querySelector('[data-dialog=install-help]'),box=dialog.getBoundingClientRect(),button=dialog.querySelector('.dialog-actions .button').getBoundingClientRect();return {left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:innerWidth,height:innerHeight,buttonHeight:button.height,overflow:document.documentElement.scrollWidth>innerWidth}})()");
+      assert.equal(metrics.overflow, false, `install guidance overflows at ${width}px`);
+      assert.ok(metrics.left >= 0 && metrics.top >= 0 && metrics.right <= width && metrics.bottom <= height, `install guidance is clipped at ${width}px: ${JSON.stringify(metrics)}`);
+      if (width <= 430) assert.ok(metrics.buttonHeight >= 44, `install guidance action is too small at ${width}px`);
+    }
+    await setViewport(1280, 900);
+    await clickButton("Done");
+    await waitFor("document.querySelector('[data-install]').hidden", "dismissed iOS install guidance");
+    await evaluate("if(window.__installOriginalUserAgent)Object.defineProperty(navigator,'userAgent',window.__installOriginalUserAgent);else delete navigator.userAgent;delete window.__installOriginalUserAgent");
     assert.ok(await evaluate("document.querySelector('#first-use-heading')?.textContent.includes('Set up once')"), "empty first-use state did not appear");
     await clickButton("Create your first class");
     await waitFor("document.querySelector('[data-dialog=class]')?.open", "class dialog");
@@ -552,6 +589,20 @@ test(`production-like Chromium workflow, responsive layouts, ${currentCacheName}
 
     await evaluate(`(()=>{const row=document.querySelector('[data-attendance-row=${JSON.stringify(seed.students[3].id)}]');row.querySelector('[data-attendance-status=late]').click()})()`);
     await waitFor("document.querySelector('[data-attendance-save-state]')?.textContent==='Unsaved changes'", "attendance edit state before navigation guard");
+    const pageLoadsBeforeBlockedUpdate = pageLoadEvents;
+    const blockedUpdate = await evaluate("(()=>{window.matevokHadServiceWorkerController=true;navigator.serviceWorker.dispatchEvent(new Event('controllerchange'));document.querySelector('[data-apply-update]').click();return {visible:!document.querySelector('[data-update-notice]').hidden,message:document.querySelector('[data-update-message]').textContent}})()");
+    assert.equal(blockedUpdate.visible, true);
+    assert.match(blockedUpdate.message, /Save your unsaved work before reloading/);
+    for (const [width, height] of [[320, 740], [390, 844], [768, 1024], [1280, 900]]) {
+      await setViewport(width, height);
+      const metrics = await evaluate("(()=>{const notice=document.querySelector('[data-update-notice]'),button=document.querySelector('[data-apply-update]').getBoundingClientRect(),box=notice.getBoundingClientRect();return {left:box.left,right:box.right,width:innerWidth,buttonHeight:button.height,overflow:document.documentElement.scrollWidth>innerWidth}})()");
+      assert.equal(metrics.overflow, false, `update notice overflows at ${width}px`);
+      assert.ok(metrics.left >= 0 && metrics.right <= width, `update notice is clipped at ${width}px`);
+      if (width <= 430) assert.ok(metrics.buttonHeight >= 44, `update action is too small at ${width}px`);
+    }
+    await setViewport(390, 844);
+    await pause(150);
+    assert.equal(pageLoadEvents, pageLoadsBeforeBlockedUpdate, "an update request must not reload while Attendance is dirty");
     await assertBeforeUnloadProtection(true, "dirty Attendance draft");
     const attendanceOwnerBeforeCancelledExit = await evaluate("localStorage.getItem('matevok-workspace-editor-owner-v1')");
     const cancelledAttendanceExit = await assertBeforeUnloadProtection(true, "cancelled browser exit while Attendance is dirty");

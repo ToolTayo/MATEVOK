@@ -1,10 +1,10 @@
-const CACHE_NAME = "teacher-workspace-shell-v36";
+const CACHE_NAME = "teacher-workspace-shell-v37";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
-  "./startup.js?v=36",
-  "./app.js?v=36",
+  "./startup.js?v=37",
+  "./app.js?v=37",
   "./workspace-lock.js",
   "./storage.js",
   "./backup-status.js",
@@ -18,13 +18,14 @@ const APP_SHELL = [
   "./reports.js",
   "./class-work.js",
   "./lesson-reference.js",
+  "./pwa-install.js",
   "./manifest.webmanifest",
   "./favicon.svg"
 ];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
   );
 });
 
@@ -37,6 +38,10 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("message", (event) => {
+  if (event.data?.type === "MATEVOK_APPLY_UPDATE") {
+    event.waitUntil(self.skipWaiting());
+    return;
+  }
   if (event.data?.type !== "MATEVOK_RELOAD_PEERS_FOR_TAKEOVER") return;
   const sourceId = event.source?.id;
   const responsePort = event.ports?.[0];

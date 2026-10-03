@@ -15,6 +15,7 @@ assert.ok(Number.isInteger(currentShellVersion), "service worker must declare on
 const currentCacheName = `teacher-workspace-shell-v${currentShellVersion}`;
 const staleCacheNames = ["old-shell", ...Array.from({ length: Math.max(0, currentShellVersion - 13) }, (_, index) => `teacher-workspace-shell-v${index + 13}`)];
 const openedCaches = [];
+let skipWaitingCalls = 0;
 const cache = {
   async addAll(resources) {
     for (const resource of resources) cached.set(resource, new Response(`cached:${resource}`));
@@ -28,7 +29,7 @@ globalThis.self = {
   location: { origin: "https://teacher-workspace.test" },
   registration: { scope: "https://teacher-workspace.test/dist/" },
   addEventListener: (name, handler) => events.set(name, handler),
-  skipWaiting: async () => undefined,
+  skipWaiting: async () => { skipWaitingCalls += 1; },
   clients: { claim: async () => undefined, matchAll: async () => [] }
 };
 globalThis.caches = {
@@ -115,12 +116,21 @@ test("offline shell installs startup modules and removes stale application cache
   assert.equal(cached.has("./reports.js"), true);
   assert.equal(cached.has("./class-work.js"), true);
   assert.equal(cached.has("./lesson-reference.js"), true);
+  assert.equal(cached.has("./pwa-install.js"), true);
+  assert.equal(skipWaitingCalls, 0, "an update must wait until the teacher explicitly applies it");
   assert.equal([...cached.keys()].some((key) => /^\.\/(?:students|attendance|scores)(?:\/|$)/i.test(key)), false);
 
   let activateWork;
   events.get("activate")({ waitUntil: (work) => { activateWork = work; } });
   await activateWork;
   assert.deepEqual(deleted, staleCacheNames);
+});
+
+test("a waiting release activates only after the explicit update message", async () => {
+  let updateWork;
+  events.get("message")({ data: { type: "MATEVOK_APPLY_UPDATE" }, waitUntil: (work) => { updateWork = work; } });
+  await updateWork;
+  assert.equal(skipWaitingCalls, 1);
 });
 
 test("offline navigation falls back to the cached application shell", async () => {

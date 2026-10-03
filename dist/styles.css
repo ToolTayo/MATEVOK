@@ -358,12 +358,22 @@ dialog::backdrop { background: rgba(13, 43, 51, .5); }
 @media (max-width: 430px) {
   .topbar-actions .profile { display: none; }
   .crumb { font-size: .82rem; }
+  .install-button { padding-right: .55rem; padding-left: .55rem; }
+  .install-brand { display: none; }
   .class-card { grid-template-columns: auto minmax(0, 1fr); }
   .class-card > .button { grid-column: 1 / -1; width: 100%; }
   .roster-list li { grid-template-columns: 1.5rem minmax(0, 1fr); }
   .roster-actions { grid-column: 2; }
   .report-table { min-width: 34rem; }
 }
+
+.install-button { min-height: 44px; }
+.install-help-dialog .dialog-actions .button { min-height: 44px; }
+.update-notice { display: flex; align-items: center; justify-content: space-between; gap: .8rem; width: min(calc(100% - 2rem), 74rem); margin: .7rem auto 0; padding: .7rem .85rem; color: #234d55; background: #edf7f4; border: 1px solid #c8e0da; border-radius: var(--radius-control); }
+.update-notice[hidden] { display: none; }
+.update-notice p { flex: 1 1 16rem; min-width: 0; margin: 0; font-size: .86rem; line-height: 1.45; }
+.update-notice .button { min-height: 44px; }
+@media (max-width: 700px) { .update-notice { align-items: stretch; flex-direction: column; }.update-notice .button { width: 100%; } }
 
 @media (prefers-reduced-motion: reduce) {
   button, .button, .install-button, .text-button, .link-button { transition: none; }
